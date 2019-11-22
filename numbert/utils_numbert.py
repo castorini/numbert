@@ -267,19 +267,19 @@ class MsmarcoProcessor(DataProcessor):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples_train_triples(self, data, set_type):
-        """Creates examples for the training triples."""
+    def get_examples_online(self, queries, data):
+        """Creates examples for online setting."""
         examples = []
-        for (i, triple) in enumerate(data):
-            query, doc_p, doc_n = triple
-            text_a = convert_to_unicode(query)
-            labels = [1, 0]
-            for doc_ind, doc in enumerate([doc_p, doc_n]):
-                guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_ind)
-                text_b = convert_to_unicode(doc)
+        docid_dict = {}
+        for qid in queries:
+            text_a = convert_to_unicode(queries[qid])
+            for doc_ind, doc in enumerate(data[qid]):
+                guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
+                text_b = convert_to_unicode(doc.content)
+                docid_dict[doc.docid] = text_b
                 examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(labels[doc_ind]))) 
-        return examples
+                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(0)))
+        return examples, docid_dict
 
     def _create_examples(self, data, set_type):
         """Creates examples for the training(2) and dev sets."""
@@ -288,10 +288,13 @@ class MsmarcoProcessor(DataProcessor):
             query, qrels, doc_titles = data[query_id]
             text_a = convert_to_unicode(query)
             doc_titles = doc_titles[:1000] #TODO generalize
-            labels = [
-              1 if doc_title in qrels else 0 
-              for doc_title in doc_titles
-            ]
+            if set_type == "eval":
+                labels = [0]
+            else:
+                labels = [
+                  1 if doc_title in qrels else 0 
+                  for doc_title in doc_titles
+                ]
             for doc_ind, doc_title in enumerate(doc_titles):
                 guid = "%s-%s-%s-%s" % (set_type, query_id, doc_ind, doc_title)
                 text_b = convert_to_unicode(self.collection[doc_title])
@@ -308,7 +311,7 @@ def convert_examples_to_features(examples, tokenizer,
                                  max_length=512,
                                  task=None,
                                  label_list=None, 
-                                 output_mode=None,
+                                 output_mode="classification",
                                  pad_on_left=False,
                                  pad_token=0,
                                  pad_token_segment_id=0,
