@@ -28,7 +28,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="numBERT",
-    version="0.0.900",
+    version="0.0.901",
     author="Ronak Pradeep",
     author_email="rpradeep@edu.uwaterloo.ca",
     description="Python interface for Neural Passage Ranking",

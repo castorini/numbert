@@ -281,6 +281,20 @@ class MsmarcoProcessor(DataProcessor):
                     InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(0)))
         return examples, docid_dict
 
+    def _create_examples_train_triples(self, data, set_type):
+        """Creates examples for the training triples."""
+        examples = []
+        for (i, triple) in enumerate(data):
+            query, doc_p, doc_n = triple
+            text_a = convert_to_unicode(query)
+            labels = [1, 0]
+            for doc_ind, doc in enumerate([doc_p, doc_n]):
+                guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_ind)
+                text_b = convert_to_unicode(doc)
+                examples.append(
+                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(labels[doc_ind]))) 
+        return examples
+
     def _create_examples(self, data, set_type):
         """Creates examples for the training(2) and dev sets."""
         examples = []
