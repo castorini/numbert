@@ -25,26 +25,28 @@ class MonoBERTSearcher:
         self.max_seq_len = max_seq_len
         self.batch_size = batch_size
 
-    def search(self, q, k=10, t=-1):
+    def search(self, q, k1=100, k2=10, t=-1):
         '''
         Parameters
         ----------
         q : str
             Query string
-        k : int
-            Number of hits to return
+        k1 : int
+            Number of hits to return from pyserini's SimpleSearcher
+        k2 : int
+            Number of hits to return from MonoBERTSearcher
         t : int
             Query tweet time for searching tweets  
             
         Returns
         -------
-        results : list of io.anserini.search.SimpleSearcher$Result
+        results : list of Hits
             List of document hits returned from search
         '''
         return self.batch_search(queries=[q], qids=['0'], 
-                                    k=k, t=t, threads=1)['0']
+                                    k1=k1, k2=k2, t=t, threads=1)['0']
 
-    def batch_search(self, queries, qids, k=10, t=-1, threads=1):
+    def batch_search(self, queries, qids, k1=100, k2=10, t=-1, threads=1):
         '''
         Parameters
         ----------
@@ -52,8 +54,10 @@ class MonoBERTSearcher:
             list of query strings
         qids : list of str
             list of corresponding query ids
-        k : int
-            Number of hits to return
+        k1 : int
+            Number of hits to return from pyserini's SimpleSearcher
+        k2 : int
+            Number of hits to return from MonoBERTSearcher
         t : int
             Query tweet time for searching tweets  
         threads : int
@@ -61,10 +65,10 @@ class MonoBERTSearcher:
             
         Returns
         -------
-        result_dict : dict of {str : io.anserini.search.SimpleSearcher$Result}
+        result_dict : dict of {str : Hits}
             Dictionary of {qid : document hits} returned from each query
         '''
-        batch_hits = self.simple_searcher.batch_search(queries=queries, qids=qids, k=k,
+        batch_hits = self.simple_searcher.batch_search(queries=queries, qids=qids, k=k1,
                                              t=t, threads=1)
         query_dict = dict(zip(qids, queries))
         examples, docid_dict = self.processor.get_examples_online(query_dict, batch_hits)
@@ -88,4 +92,5 @@ class MonoBERTSearcher:
                     preds[qid].append(Hit(pred[0], docid_dict[pred[0]], pred[1]))
                 else:
                     preds[qid] = [Hit(pred[0], docid_dict[pred[0]], pred[1])]
+            preds[qid] = preds[qid][:k2]
         return preds
