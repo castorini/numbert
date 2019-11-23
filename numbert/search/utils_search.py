@@ -15,7 +15,7 @@ from transformers import (BertConfig,
                           DistilBertConfig,
                           DistilBertForSequenceClassification,
                           DistilBertTokenizer)
-import tqdm
+from tqdm import tqdm
 import numpy as np
 import re
 
@@ -61,7 +61,7 @@ def online_eval(model, tokenizer, device, features, batch_size = 1, model_type="
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=batch_size)
     preds = None
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
+    for batch in tqdm(eval_dataloader):
         model.eval()
         batch = tuple(t.to(device) for t in batch)
 

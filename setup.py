@@ -28,7 +28,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="numBERT",
-    version="0.1",
+    version="0.0.800",
     author="Ronak Pradeep",
     author_email="rpradeep@edu.uwaterloo.ca",
     description="Python interface for Neural Passage Ranking",
@@ -37,7 +37,9 @@ setuptools.setup(
     url="https://github.com/castorini/numBERT",
     install_requires=["torch==1.2.0", 
                       "tensorflow-cpu",
-                      "transformers"], # Hacky fix to ignore PyPi
+                      "transformers",
+                      "pyjnius==1.2",
+                      "pyserini==0.6.1.post0"], # Hacky fix to ignore PyPi
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",

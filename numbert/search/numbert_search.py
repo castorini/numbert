@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 
 from .utils_search import load_model, online_eval, Hit
 from ..utils_numbert import processors, output_modes, convert_examples_to_features
+import os
+os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-11-openjdk-amd64"
 
 class MonoBERTSearcher:
     '''
@@ -17,7 +19,7 @@ class MonoBERTSearcher:
     def __init__(self, index_dir, model_dir = None, model_type="bert", max_seq_len = 512, batch_size = 1):
         self.simple_searcher = pysearch.SimpleSearcher(index_dir)
         self.model, self.model_tokenizer, self.device = load_model(model_dir)
-        self.processor = processors["msmarco"]
+        self.processor = processors["msmarco"]()
         self.output_mode = output_modes["msmarco"]
         self.model_type = model_type
         self.max_seq_len = max_seq_len
@@ -67,14 +69,15 @@ class MonoBERTSearcher:
         query_dict = dict(zip(qids, queries))
         examples, docid_dict = self.processor.get_examples_online(query_dict, batch_hits)
         features = convert_examples_to_features(examples,
-                                                self.tokenizer,
+                                                self.model_tokenizer,
                                                 label_list=self.processor.get_labels(),
                                                 max_length=self.max_seq_len,
                                                 pad_on_left=bool(self.model_type in ['xlnet']),                 # pad on the left for xlnet
-                                                pad_token=self.tokenizer.convert_tokens_to_ids([self.tokenizer.pad_token])[0],
+                                                pad_token=self.model_tokenizer.convert_tokens_to_ids([self.model_tokenizer.pad_token])[0],
                                                 pad_token_segment_id=4 if self.model_type in ['xlnet'] else 0,
                                                 cls_token_segment_id=2 if self.model_type in ['xlnet'] else 1,
                                                 cls_token_at_end=bool(self.model_type in ['xlnet']))
+
         
         # Evaluate
         model_preds = online_eval(self.model, self.model_tokenizer, self.device, features, self.batch_size)
@@ -82,7 +85,7 @@ class MonoBERTSearcher:
         for qid in model_preds:
             for pred in model_preds[qid]:
                 if qid in preds:
-                    preds[qid].append([Hit(pred[0], docid_dict[pred[0]], pred[1])])
+                    preds[qid].append(Hit(pred[0], docid_dict[pred[0]], pred[1]))
                 else:
                     preds[qid] = [Hit(pred[0], docid_dict[pred[0]], pred[1])]
         return preds
