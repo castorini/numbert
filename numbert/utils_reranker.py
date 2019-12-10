@@ -106,11 +106,3 @@ class Hit:
         self.docid = docid
         self.content = content
         self.score = score
-
-
-
-
-
-
-
-

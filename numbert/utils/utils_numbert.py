@@ -24,6 +24,8 @@ import sys
 import copy
 import json
 from io import open
+import time
+from tqdm import tqdm
 
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score
@@ -33,6 +35,8 @@ import tensorflow as tf
 import collections
 from . import metrics
 import numpy as np
+
+from .data_utils import trec_car_classes
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +54,12 @@ class InputExample(object):
         label: (Optional) string. The label of the example. This should be
         specified for train and dev examples, but not for test examples.
     """
-    def __init__(self, guid, text_a, text_b=None, label=None):
+    def __init__(self, guid, text_a, text_b=None, label=None, len_gt_titles=None):
         self.guid = guid
         self.text_a = text_a
         self.text_b = text_b
         self.label = label
+        self.len_gt_titles = len_gt_titles
 
     def __repr__(self):
         return str(self.to_json_string())
@@ -120,6 +125,10 @@ class DataProcessor(object):
 
     def get_dev_examples(self, data_dir):
         """Gets a collection of `InputExample`s for the dev set."""
+        raise NotImplementedError()
+
+    def get_test_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the test set."""
         raise NotImplementedError()
 
     def get_labels(self):
@@ -258,14 +267,10 @@ class MsmarcoProcessor(DataProcessor):
             qrels = self.load_qrels(os.path.join(data_dir,"qrels.eval.small.tsv"))
 
         queries = self.load_queries(os.path.join(data_dir,"queries.eval.small.tsv"))
-        run = self.load_run(os.path.join(data_dir,"run.eval.small.expanded-topk10.tsv"))
+        run = self.load_run(os.path.join(data_dir,"run.eval.small.tsv"))
         eval_data = self.merge(qrels=qrels, run=run, queries=queries)
 
         return self._create_examples(eval_data, "eval")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
 
     def get_examples_online(self, queries, data):
         """Creates examples for online setting."""
@@ -280,6 +285,10 @@ class MsmarcoProcessor(DataProcessor):
                 examples.append(
                     InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(0)))
         return examples, docid_dict
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
 
     def _create_examples_train_triples(self, data, set_type):
         """Creates examples for the training triples."""
@@ -315,6 +324,141 @@ class MsmarcoProcessor(DataProcessor):
                 examples.append(
                     InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(labels[doc_ind])))
         return examples
+
+class TreccarProcessor(DataProcessor):
+    """Processor for the TREC-CAR data set."""
+
+    def load_qrels(self, path):
+        """Loads qrels into a dict of key: query_id, value: list of relevant doc ids."""
+        qrels = collections.defaultdict(set)
+        with open(path) as f:
+            for i, line in enumerate(f):
+                query_id, _, doc_id, relevance = line.rstrip().split(' ')
+                if int(relevance) >= 1:
+                    qrels[query_id].add(doc_id)
+                if i % 1000000 == 0:
+                    print('Loading qrels {}'.format(i))
+        return qrels
+
+    def load_run(self, path):
+        """Loads run into a dict of key: query_id, value: list of candidate doc ids."""
+
+        # We want to preserve the order of runs so we can pair the run file with the
+        # TFRecord file.
+        run = collections.OrderedDict()
+        with open(path) as f:
+            for i, line in enumerate(f):
+                query_id, _, doc_title, rank, _, _ = line.split(' ')
+                if query_id not in run:
+                    run[query_id] = []
+                run[query_id].append((doc_title, int(rank)))
+                if i % 1000000 == 0:
+                    print('Loading run {}'.format(i))
+        # Sort candidate docs by rank.
+        sorted_run = collections.OrderedDict()
+        for query_id, doc_titles_ranks in run.items():
+            sorted(doc_titles_ranks, key=lambda x: x[1])
+            doc_titles = [doc_titles for doc_titles, _ in doc_titles_ranks]
+            sorted_run[query_id] = doc_titles
+
+        return sorted_run
+
+    def load_collection(self, data_dir):
+        """Loads TREC-CAR's paraghaphs into a dict of key: title, value: paragraph."""
+        self.corpus = {}
+
+        APPROX_TOTAL_PARAGRAPHS = 30000000
+        with open(os.path.join(data_dir, "paragraphCorpus/dedup.articles-paragraphs.cbor"), 'rb') as f:
+            for p in tqdm(trec_car_classes.iter_paragraphs(f), total=APPROX_TOTAL_PARAGRAPHS):
+                para_txt = [elem.text if isinstance(elem, trec_car_classes.ParaText)
+                            else elem.anchor_text for elem in p.bodies]
+                self.corpus[p.para_id] = ' '.join(para_txt)
+
+    def merge(self, qrels, run):
+        """Merge qrels and runs into a single dict of key: query_id, 
+        value: tuple(relevant_doc_ids, candidate_doc_ids)"""
+        data = collections.OrderedDict()
+        for query_id, candidate_doc_ids in run.items():
+            relevant_doc_ids = set()
+            if qrels:
+                relevant_doc_ids = qrels[query_id]
+            data[query_id] = (relevant_doc_ids, candidate_doc_ids)
+        return data
+
+    def get_train_examples(self, data_dir, is_qrels = True):
+        """See base class."""
+        qrels = None
+        if is_qrels:
+            qrels = self.load_qrels(os.path.join(data_dir,"train.qrels"))
+        
+        run = self.load_run(os.path.join(data_dir,"train.run"))
+        eval_data = self.merge(qrels=qrels, run=run)
+
+        return self._create_examples(eval_data, "train")
+
+    def get_dev_examples(self, data_dir, is_qrels = True):
+        """See base class."""
+        qrels = None
+        if is_qrels:
+            qrels = self.load_qrels(os.path.join(data_dir,"dev.qrels"))
+
+        run = self.load_run(os.path.join(data_dir,"dev.run"))
+        dev_data = self.merge(qrels=qrels, run=run)
+
+        return self._create_examples(dev_data, "dev")
+
+    def get_test_examples(self, data_dir, is_qrels = True):
+        """See base class."""
+        qrels = None
+        if is_qrels:
+            qrels = self.load_qrels(os.path.join(data_dir,"test.qrels"))
+
+        run = self.load_run(os.path.join(data_dir,"test.run"))
+        eval_data = self.merge(qrels=qrels, run=run)
+
+        return self._create_examples(eval_data, "eval")
+
+
+    def get_examples_online(self, queries, data):
+        """Creates examples for the online interactive setting."""
+        examples = []
+        docid_dict = {}
+        for qid in queries:
+            text_a = convert_to_unicode(queries[qid])
+            for doc_ind, doc in enumerate(data[qid]):
+                guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
+                text_b = convert_to_unicode(doc.content)
+                docid_dict[doc.docid] = text_b
+                examples.append(
+                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(0)))
+        return examples, docid_dict
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, data, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        oq_list = []
+        for (i, query) in enumerate(data):
+            qrels, doc_titles = data[query]
+            oq_list.append(query)
+            query = query.replace('enwiki:', '')
+            query = query.replace('%20', ' ')
+            query = query.replace('/', ' ')
+            text_a = convert_to_unicode(query)
+            labels = [
+              1 if doc_title in qrels else 0 
+              for doc_title in doc_titles
+            ]
+            for doc_ind, doc_title in enumerate(doc_titles):
+                guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_title)
+                text_b = convert_to_unicode(self.corpus[doc_title])
+                examples.append(
+                    InputExample(guid=guid, text_a=text_a, text_b=text_b, 
+                                 label=str(labels[doc_ind]), len_gt_titles=len(qrels)))
+        return (examples, oq_list)
 
 def _create_int64_feature(value):
   feature = tf.train.Feature(int64_list=tf.train.Int64List(value=value))
@@ -388,18 +532,6 @@ def convert_examples_to_features(examples, tokenizer,
         if is_tf_dataset:
             example = processor.get_example_from_tensor_dict(example)
 
-        # inputs = tokenizer.encode_plus(
-        #     example.text_a,
-        #     example.text_b,
-        #     add_special_tokens=True,
-        #     max_length=max_length,
-        # )
-        # input_ids, token_type_ids = inputs["input_ids"], inputs["token_type_ids"]
-
-        # # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # # tokens are attended to.
-        # attention_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
-
         tokens_a = tokenizer.tokenize(example.text_a)
 
         tokens_b = tokenizer.tokenize(example.text_b)
@@ -460,13 +592,19 @@ def convert_examples_to_features(examples, tokenizer,
 
         if use_tfrecord:
             guid_list.append(example.guid)
-            tf_features = tf.train.Features(feature={
+            fdict = {
                 'input_ids': _create_int64_feature(input_ids),
                 'attention_mask': _create_int64_feature(attention_mask),
                 'token_type_ids': _create_int64_feature(token_type_ids),
                 'labels': _create_int64_feature([label]),
                 'guid': _create_int64_feature([ex_index])
-            })
+            }
+            if task == "treccar":
+                if ex_index <= 10:
+                    print("TREC")
+                fdict['len_gt_titles'] = _create_int64_feature([example.len_gt_titles])
+
+            tf_features = tf.train.Features(feature=fdict)
             tf_example = tf.train.Example(features=tf_features)
             writer.write(tf_example.SerializeToString())
 
@@ -543,7 +681,7 @@ def pearson_and_spearman(preds, labels):
 
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
-    if task_name == "msmarco":
+    if task_name in ["msmarco", "treccar"]:
         METRICS = ['MAP', 'RPrec', 'MRR', 'NDCG', 'MRR@10']
         all_metrics = np.zeros(len(METRICS))
         for key in preds:
@@ -558,15 +696,18 @@ def compute_metrics(task_name, preds, labels):
         raise KeyError(task_name)
 
 processors = {
-    "msmarco": MsmarcoProcessor
+    "msmarco": MsmarcoProcessor,
+    "treccar": TreccarProcessor
 }
 
 output_modes = {
-    "msmarco": "classification"
+    "msmarco": "classification",
+    "treccar": "classification"
 }
 
 GLUE_TASKS_NUM_LABELS = {
-    "msmarco": 2
+    "msmarco": 2,
+    "treccar": 2
 }
 
 

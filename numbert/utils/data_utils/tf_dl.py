@@ -20,19 +20,27 @@ import threading
 import tensorflow as tf
 tf.enable_eager_execution()
 import torch
-import numpy as np
 
 class TFRecordDataLoader(object):
-    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False):
+    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco"):
         tf.set_random_seed(seed)
         if isinstance(records, str):
             records  = [records]
 
-        self.record_converter = Record2Example({"input_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                "attention_mask": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                "token_type_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                "labels" : tf.FixedLenFeature([1], tf.int64),
-                                                "guid" : tf.FixedLenFeature([1], tf.int64)})
+        if task == "treccar":
+            self.record_converter = Record2Example({"input_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "attention_mask": tf.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "token_type_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "labels" : tf.FixedLenFeature([1], tf.int64),
+                                                    "guid" : tf.FixedLenFeature([1], tf.int64),
+                                                    "len_gt_titles" : tf.FixedLenFeature([1], tf.int64)})
+        else:
+            self.record_converter = Record2Example({"input_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "attention_mask": tf.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "token_type_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "labels" : tf.FixedLenFeature([1], tf.int64),
+                                                    "guid" : tf.FixedLenFeature([1], tf.int64)})
+
 
         #Instantiate dataset according to original BERT implementation
         if train:
@@ -80,16 +88,6 @@ class Record2Example(object):
         return example
 
 def convert_tf_example_to_torch_tensors(example):
-    # item = {k: (v.numpy()) for k,v in example.items()}
-    # mask = np.zeros_like(item['input_ids'])
-    # mask_labels = np.ones_like(item['input_ids'])*-1
-    # for b, row in enumerate(item['masked_lm_positions'].astype(int)):
-    #     for i, idx in enumerate(row):
-    #         if item['masked_lm_weights'][b, i] != 0:
-    #             mask[b, idx] = 1
-    #             mask_labels[b, idx] = item['masked_lm_ids'][b, i]
-    # output = {'text': item['input_ids'], 'types': item['segment_ids'],'is_random': item['next_sentence_labels'],
-    #         'pad_mask': 1-item['input_mask'], 'mask': mask, 'mask_labels': mask_labels}
     return {k: torch.from_numpy(v.numpy()) for k,v in example.items()}
 
 class MultiprocessLoader(object):

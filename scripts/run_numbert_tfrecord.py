@@ -52,11 +52,15 @@ from transformers import (WEIGHTS_NAME, BertConfig,
                                   DistilBertTokenizer)
 
 from transformers import AdamW
-from transformers import WarmupLinearSchedule as get_linear_schedule_with_warmup
 
-from .utils_numbert import (compute_metrics, convert_examples_to_features,
-                        output_modes, processors)  # TODO see if it works
-from .data_utils import tf_dl
+try:# old transformers remove
+    from transformers import WarmupLinearSchedule as get_linear_schedule_with_warmup
+except:
+    from transformers import get_linear_schedule_with_warmup
+
+from numbert.utils.utils_numbert import (compute_metrics, convert_examples_to_features,
+                        output_modes, processors)  
+from numbert.utils.data_utils import tf_dl 
 
 import tensorflow as tf
 
@@ -73,6 +77,7 @@ MODEL_CLASSES = {
     'distilbert': (DistilBertConfig, DistilBertForSequenceClassification, DistilBertTokenizer)
 }
 
+original_query_list = None # maintains list of original queries, which are used especially during TREC-CAR output
 
 def set_seed(args):
     random.seed(args.seed)
@@ -93,7 +98,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                  'max_seq_len': args.max_seq_length,
                  'train': True,
                  'num_workers': max(args.num_workers, 1),
-                 'seed': args.seed + args.local_rank + 1, #args.seed + args.rank + 1,
+                 'seed': args.seed + args.local_rank + 1,
                  'threaded_dl': args.num_workers > 0
                  }
         train_dataloader = tf_dl.TFRecordDataLoader(train_dataset,
@@ -165,6 +170,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
 
             if args.use_tfrecord:
                 batch_guids = batch.pop('guid', None)
+                batch_len_gt_titles = batch.pop('len_gt_titles', None)
                 if args.model_type == 'distilbert' or args.model_type not in ['bert', 'xlnet']:
                     _ = batch.pop('token_type_ids', None)
                 inputs = batch  
@@ -175,7 +181,6 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                 if args.model_type != 'distilbert':
                     inputs['token_type_ids'] = batch[2] if args.model_type in ['bert', 'xlnet'] else None  # XLM, DistilBERT and RoBERTa don't use segment_ids
                 batch_guids = batch[4]
-            print(batch_guids)
             outputs = model(**inputs)
             loss = outputs[0]  # model outputs are always tuple in transformers (see doc)
             
@@ -260,15 +265,16 @@ def evaluate(args, model, tokenizer, prefix=""):
         # Note that DistributedSampler samples randomly
         if args.use_tfrecord:
             data_set_args = {'batch_size': args.eval_batch_size,
-                     'max_seq_len': args.max_seq_length,
-                     'train': False,
-                     'num_workers': max(args.num_workers, 1),
-                     'seed': args.seed, #args.seed + args.rank + 1,
-                     'threaded_dl': args.num_workers > 0
-                     }
+                             'max_seq_len': args.max_seq_length,
+                             'train': False,
+                             'num_workers': max(args.num_workers, 1),
+                             'seed': args.seed, #args.seed + args.rank + 1,
+                             'threaded_dl': args.num_workers > 0,
+                             'task': args.task_name
+                             }
             print(eval_dataset)
             eval_dataloader = tf_dl.TFRecordDataLoader(eval_dataset,
-                                                        **data_set_args) #here eval dataset is just path to tf record file
+                                                       **data_set_args) #here eval dataset is just path to tf record file
         else:
             eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
             eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
@@ -294,6 +300,7 @@ def evaluate(args, model, tokenizer, prefix=""):
             with torch.no_grad():
                 if args.use_tfrecord:
                     batch_guids = batch.pop('guid', None)
+                    batch_len_gt_titles = batch.pop('len_gt_titles', None)
                     if args.model_type == 'distilbert' or args.model_type not in ['bert', 'xlnet']:
                         _ = batch.pop('token_type_ids', None)
                     inputs = batch  
@@ -304,6 +311,8 @@ def evaluate(args, model, tokenizer, prefix=""):
                     if args.model_type != 'distilbert':
                         inputs['token_type_ids'] = batch[2] if args.model_type in ['bert', 'xlnet'] else None  # XLM, DistilBERT and RoBERTa don't use segment_ids
                     batch_guids = batch[4]
+                    if args.task_name == "treccar":
+                        batch_len_gt_titles = batch[5]
                 outputs = model(**inputs)
                 tmp_eval_loss, logits = outputs[:2]
                 eval_loss += tmp_eval_loss.mean().item()
@@ -312,10 +321,14 @@ def evaluate(args, model, tokenizer, prefix=""):
             if preds is None:
                 preds = log_logits.detach().cpu().numpy()
                 lguids = list(map(lambda x: tuple(re.split(r'-',eval_guid[x])) , batch_guids.detach().cpu()))
+                if args.task_name == "treccar":
+                    llen_gt_titles = batch_len_gt_titles.detach().cpu().numpy()
                 out_label_ids = inputs['labels'].detach().cpu().numpy()
             else:
                 preds = np.append(preds, log_logits.detach().cpu().numpy(), axis=0)
                 lguids += list(map(lambda x: tuple(re.split(r'-',eval_guid[x])) , batch_guids.detach().cpu()))
+                if args.task_name == "treccar":
+                    llen_gt_titles = np.append(llen_gt_titles, batch_len_gt_titles.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
 
         numbert_predictions = {}
@@ -330,27 +343,48 @@ def evaluate(args, model, tokenizer, prefix=""):
                 numbert_predictions[guid[1]].append((guid[3], preds[ind][1]))
             else:
                 numbert_predictions[guid[1]] = [(guid[3], preds[ind][1])]
-
+        numbert_predictions_no_score = {}
         for key in numbert_predictions:
-            numbert_predictions[key] = list(map(lambda x: x[0], sorted(numbert_predictions[key], key=lambda tup: tup[1], reverse=True)))
+            numbert_predictions[key] = sorted(numbert_predictions[key], key=lambda tup: tup[1], reverse=True)
+            numbert_predictions_no_score[key] =  list(map(lambda x: x[0], numbert_predictions[key]))
             if key not in numbert_labels:
                 numbert_labels[key] = set()
+
+        if args.task_name == "treccar":
+            for ind, guid in enumerate(lguids):
+                if llen_gt_titles[ind] > len(numbert_labels[guid[1]]):
+                    # Metrics like NDCG and MAP require the total number of relevant docs.
+                    # The code below adds missing number of relevant docs to gt so the 
+                    # metrics are the same as if we had used all ground-truths.
+                    # The extra_gts have all negative ids so they don't interfere with the
+                    # predicted ids, which are all equal or greater than zero.
+                    extra_gts = list(-(np.arange(max(0, llen_gt_titles[ind] - len(numbert_labels[guid[1]])) + 1)))
+                    numbert_labels[guid[1]].update(extra_gts)
+
         eval_loss = eval_loss / nb_eval_steps
-        # if args.output_mode == "classification":
-        #     preds = np.argmax(preds, axis=1)
-        # elif args.output_mode == "regression":
-        #     preds = np.squeeze(preds)
-        result = compute_metrics(eval_task, numbert_predictions, numbert_labels)
+        result = compute_metrics(eval_task, numbert_predictions_no_score, numbert_labels)
         results.update(result)
 
         output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
+
+        if args.trec_output:
+            split = "test" if args.test else "dev"
+            output_treccar_file = os.path.join(eval_output_dir, "treccar_predictions_" + split + ".tsv")
+
+            with open(output_treccar_file, "w") as f_trec:
+                for query_id in numbert_predictions:
+                    rank = 1
+                    for doc_id, score in numbert_predictions[query_id]:
+                        f_trec.write(" ".join((original_query_list[int(query_id)], "Q0", doc_id, str(rank), str(score), "BERT")) + "\n")
+                        rank += 1
+
         if args.msmarco_output:
             split = "eval" if args.test else "dev"
             output_msmarco_file = os.path.join(eval_output_dir, "msmarco_predictions_" + split + ".tsv")
             with open(output_msmarco_file, "w") as f_msmarco:
                 for query_id in numbert_predictions:
                     rank = 1
-                    for doc_id in numbert_predictions[query_id]:
+                    for doc_id, _ in numbert_predictions[query_id]:
                         f_msmarco.write("\t".join((query_id, doc_id, str(rank))) + "\n")
                         rank += 1
 
@@ -372,6 +406,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
     guid_list = []
     writer = None
     dataset = None
+    global original_query_list
 
     split = 'dev' if evaluate else 'train'
     if args.test:
@@ -385,27 +420,39 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         str(args.max_seq_length),
         str(task)))
     cached_guid_map_file = cached_features_file + "_guid_map.p"
+    if args.task_name == "treccar":
+        cached_oq_map_file = cached_features_file + "_oq_map.p"
     if (os.path.exists(cached_features_file) and not args.overwrite_cache) and (not args.use_tfrecord):
         assert os.path.exists(cached_guid_map_file)
         logger.info("Loading features from cached file %s", cached_features_file)
         features = torch.load(cached_features_file)
         with open(cached_guid_map_file, 'rb') as fp:
             guid_list = pickle.load(fp)
+        if args.task_name == "treccar":
+            with open(cached_oq_map_file, "rb") as fp:
+                original_query_list = pickle.load(fp)
+
     elif args.use_tfrecord and os.path.exists(os.path.join(args.data_dir, 'dataset_{}.tf'.format(split))): #TODO caching
         with open(cached_guid_map_file, 'rb') as fp:
             guid_list = pickle.load(fp)
+        if args.task_name == "treccar":
+            with open(cached_oq_map_file, "rb") as fp:
+                original_query_list = pickle.load(fp)
     else:
         logger.info("Creating features from dataset file at %s", args.data_dir)
         label_list = processor.get_labels()
         if task in ['mnli', 'mnli-mm'] and args.model_type in ['roberta']:
             # HACK(label indices are swapped in RoBERTa pretrained model)
             label_list[1], label_list[2] = label_list[2], label_list[1] 
-        if task in ['msmarco'] and evaluate: # ignore for train_triples
+        if task in ['msmarco','treccar'] and evaluate: # ignore for train_triples
+            logger.info("Loading Collection")
             processor.load_collection(args.data_dir)
         if args.test:
-            examples = processor.get_eval_examples(args.data_dir)
+            examples = processor.get_test_examples(args.data_dir)
         else:
             examples = processor.get_dev_examples(args.data_dir) if evaluate else processor.get_train_examples(args.data_dir)
+        if args.task_name == "treccar":
+            (examples, original_query_list) = examples
         if args.use_tfrecord:
             writer = tf.python_io.TFRecordWriter(dataset)
 
@@ -420,7 +467,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 cls_token_segment_id=2 if args.model_type in ['xlnet'] else 1,
                                                 cls_token_at_end=bool(args.model_type in ['xlnet']),
                                                 use_tfrecord = args.use_tfrecord,
-                                                writer = writer)
+                                                writer = writer,
+                                                task = args.task_name)
         if args.use_tfrecord:
             guid_list = features
         if args.local_rank in [-1, 0]:
@@ -431,6 +479,9 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                 torch.save(features, cached_features_file)
             with open(cached_guid_map_file, "wb") as fp:
                 pickle.dump(guid_list, fp)
+            if args.task_name == "treccar":
+                with open(cached_oq_map_file, "wb") as fp:
+                    pickle.dump(original_query_list, fp)
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
@@ -447,7 +498,11 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         elif output_mode == "regression":
             all_labels = torch.tensor([f.label for f in features], dtype=torch.float)
         all_guids = torch.tensor([i for i in range(len(guid_list))], dtype=torch.long)
-        dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels, all_guids)
+        if task == "treccar":
+            all_len_gt_titles = torch.tensor([f.len_gt_titles for f in features], dtype=torch.long)
+            dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels, all_guids, all_len_gt_titles)
+        else:
+            dataset = TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_labels, all_guids)
         return dataset, guid_list
 
 
@@ -466,6 +521,8 @@ def main():
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
     parser.add_argument("--msmarco_output", action="store_true", 
+                        help="Whether to create MSMarco output file")
+    parser.add_argument("--trec_output", action="store_true", 
                         help="Whether to create MSMarco output file")
     parser.add_argument("--test", action="store_true", 
                         help="Whether to run test")
