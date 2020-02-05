@@ -1,5 +1,6 @@
 # coding=utf-8
-# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
+# Copyright 2020 castorini team, The Google AI Language Team Authors and 
+# The HuggingFace Inc. team.
 # Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,14 +51,17 @@ class InputExample(object):
         text_a: string. The untokenized text of the first sequence. For single
         sequence tasks, only this sequence must be specified.
         text_b: (Optional) string. The untokenized text of the second sequence.
+        text_c: (Optional) string. The untokenized text of the third sequence.
         Only must be specified for sequence pair tasks.
         label: (Optional) string. The label of the example. This should be
         specified for train and dev examples, but not for test examples.
     """
-    def __init__(self, guid, text_a, text_b=None, label=None, len_gt_titles=None):
+    def __init__(self, guid, text_a, text_b=None, text_c=None, label=None,
+                 len_gt_titles=None):
         self.guid = guid
         self.text_a = text_a
         self.text_b = text_b
+        self.text_c = text_c
         self.label = label
         self.len_gt_titles = len_gt_titles
 
@@ -81,14 +85,18 @@ class InputFeatures(object):
 
     Args:
         input_ids: Indices of input sequence tokens in the vocabulary.
-        attention_mask: Mask to avoid performing attention on padding token indices.
+        attention_mask: Mask to avoid performing attention on padding token 
+        indices.
             Mask values selected in ``[0, 1]``:
-            Usually  ``1`` for tokens that are NOT MASKED, ``0`` for MASKED (padded) tokens.
-        token_type_ids: Segment token indices to indicate first and second portions of the inputs.
+            Usually  ``1`` for tokens that are NOT MASKED, ``0`` for MASKED
+             (padded) tokens.
+        token_type_ids: Segment token indices to indicate first and second
+         portions of the inputs.
         label: Label corresponding to the input
     """
 
-    def __init__(self, input_ids, attention_mask, token_type_ids, label, guid = None):
+    def __init__(self, input_ids, attention_mask, token_type_ids, label, 
+                 guid = None):
         self.input_ids = input_ids
         self.attention_mask = attention_mask
         self.token_type_ids = token_type_ids
@@ -151,7 +159,8 @@ class MsmarcoProcessor(DataProcessor):
     """Processor for the MS-MARCO data set."""
 
     def load_qrels(self, path):
-        """Loads qrels into a dict of key: query_id, value: list of relevant doc ids."""
+        """Loads qrels into a dict of key: query_id, value: list of relevant 
+        doc ids."""
         qrels = collections.defaultdict(set)
         with open(path) as f:
             for i, line in enumerate(f):
@@ -175,10 +184,11 @@ class MsmarcoProcessor(DataProcessor):
 
 
     def load_run(self, path):
-        """Loads run into a dict of key: query_id, value: list of candidate doc ids."""
+        """Loads run into a dict of key: query_id, value: list of candidate 
+        doc ids."""
 
-        # We want to preserve the order of runs so we can pair the run file with the
-        # TFRecord file.
+        # We want to preserve the order of runs so we can pair the run file 
+        # with the TFRecord file.
         run = collections.OrderedDict()
         with open(path) as f:
             for i, line in enumerate(f):
@@ -229,88 +239,142 @@ class MsmarcoProcessor(DataProcessor):
             data[query_id] = (query, relevant_doc_ids, candidate_doc_ids)
         return data
 
-    def get_train_examples(self, data_dir, is_qrels = None):
+    def get_train_examples(self, data_dir, is_qrels = None,
+                           is_duoBERT = False):
         """See base class."""
 
         return self._create_examples_train_triples(self.load_train_triples(
                 os.path.join(data_dir,"triples.train.small.tsv")),
-                "train")
+                "train", is_duoBERT)
 
-    def get_train_examples_old(self, data_dir, is_qrels = True):
-        """See base class. Used when not using triples"""
+    def get_train_examples_non_triples(self, data_dir, is_qrels = True,
+                                       is_duoBERT = False):
+        """Used when not using the triples format for train in MS-MARCO"""
         qrels = None
         if is_qrels:
             qrels = self.load_qrels(os.path.join(data_dir,"qrels.train.tsv"))
 
         queries = self.load_queries(os.path.join(data_dir,"queries.train.tsv"))
-        run = self.load_run(os.path.join(data_dir,"run.train.tsv"))
+        if is_duoBERT:
+            run = self.load_run(os.path.join(data_dir,
+                                             "run.monobert.train.tsv"))
+        else:
+            run = self.load_run(os.path.join(data_dir,"run.train.tsv"))
         train_data = self.merge(qrels=qrels, run=run, queries=queries)
 
-        return self._create_examples(train_data, "train")
+        return self._create_examples(train_data, "train", is_duoBERT)
 
-    def get_dev_examples(self, data_dir, is_qrels = True):
+    def get_dev_examples(self, data_dir, is_qrels = True, is_duoBERT = False):
         """See base class."""
         qrels = None
         if is_qrels:
-            qrels = self.load_qrels(os.path.join(data_dir,"qrels.dev.small.tsv"))
+            qrels = self.load_qrels(os.path.join(data_dir,
+                                                 "qrels.dev.small.tsv"))
 
-        queries = self.load_queries(os.path.join(data_dir,"queries.dev.small.tsv"))
-        run = self.load_run(os.path.join(data_dir,"run.dev.small.tsv"))
+        queries = self.load_queries(os.path.join(data_dir,
+                                                 "queries.dev.small.tsv"))
+        if is_duoBERT:
+            run = self.load_run(os.path.join(data_dir,
+                                             "run.monobert.dev.small.tsv"))
+        else:
+            run = self.load_run(os.path.join(data_dir,"run.dev.small.tsv"))
         dev_data = self.merge(qrels=qrels, run=run, queries=queries)
 
-        return self._create_examples(dev_data, "dev")
+        return self._create_examples(dev_data, "dev", is_duoBERT)
 
-    def get_test_examples(self, data_dir, is_qrels = True):
+    def get_test_examples(self, data_dir, is_qrels = True, is_duoBERT = False):
         """See base class."""
         qrels = None
         if is_qrels:
-            qrels = self.load_qrels(os.path.join(data_dir,"qrels.eval.small.tsv"))
+            qrels = self.load_qrels(os.path.join(data_dir,
+                                                 "qrels.eval.small.tsv"))
 
-        queries = self.load_queries(os.path.join(data_dir,"queries.eval.small.tsv"))
-        run = self.load_run(os.path.join(data_dir,"run.eval.small.tsv"))
+        queries = self.load_queries(os.path.join(data_dir,
+                                                 "queries.eval.small.tsv"))
+        if is_duoBERT:
+            run = self.load_run(os.path.join(data_dir,
+                                             "run.monobert.test.small.tsv"))
+        else:
+            run = self.load_run(os.path.join(data_dir,"run.eval.small.tsv"))
         eval_data = self.merge(qrels=qrels, run=run, queries=queries)
 
-        return self._create_examples(eval_data, "eval")
+        return self._create_examples(eval_data, "eval", is_duoBERT)
 
-    def get_examples_online(self, queries, data):
+    def get_examples_online(self, queries, data, is_duoBERT = False):
         """Creates examples for online setting."""
         examples = []
         docid_dict = {}
         for qid in queries:
             text_a = convert_to_unicode(queries[qid])
-            for doc_ind, doc in enumerate(data[qid]):
-                guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
-                text_b = convert_to_unicode(doc.content)
-                docid_dict[doc.docid] = text_b
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(0)))
+            if is_duoBERT:
+                for doc_ind_b, doc_b in enumerate(data[qid]):
+                    docid_dict[doc_b.docid] = convert_to_unicode(doc_b.content)
+                    for doc_ind_c, doc_c in enumerate(data[qid]):
+                        if doc_ind_b == doc_ind_c:
+                            continue
+                        guid = "%s-%s-%s-%s-%s-%s" % ("online", qid, doc_ind_b,
+                            doc_b.docid, doc_ind_c, doc_c.docid)
+                        text_b = convert_to_unicode(doc_b.content)
+                        text_c = convert_to_unicode(doc_c.content)
+                        examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                     text_b=text_b, 
+                                                     text_c=text_c, 
+                                                     label='0'))
+            else:
+                for doc_ind, doc in enumerate(data[qid]):
+                    guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
+                    text_b = convert_to_unicode(doc.content)
+                    docid_dict[doc.docid] = text_b
+                    examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                 text_b=text_b, label=str(0)))
         return examples, docid_dict
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples_train_triples(self, data, set_type):
+    def _create_examples_train_triples(self, data, set_type, 
+                                       is_duoBERT = False):
         """Creates examples for the training triples."""
         examples = []
         for (i, triple) in enumerate(data):
             query, doc_p, doc_n = triple
             text_a = convert_to_unicode(query)
             labels = [1, 0]
-            for doc_ind, doc in enumerate([doc_p, doc_n]):
-                guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_ind)
-                text_b = convert_to_unicode(doc)
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(labels[doc_ind]))) 
+            if is_duoBERT:
+                for doc_ind_b, doc_b in enumerate([doc_p, doc_n]):
+                    for doc_ind_c, doc_c in enumerate([doc_p, doc_n]):
+                        if doc_ind_b == doc_ind_c:
+                            continue
+                        guid = "%s-%s-%s-%s-%s-%s" % (set_type, i, doc_ind_b, 
+                            doc_ind_b, doc_ind_c, doc_ind_c)
+                        text_b =  convert_to_unicode(doc_b)
+                        text_c =  convert_to_unicode(doc_c)
+                        examples.append(InputExample(guid=guid, text_a=text_a,
+                                                     text_b=text_b, 
+                                                     text_c=text_c, 
+                                                     label=str(
+                                                        labels[doc_ind_b])))
+            else:
+                for doc_ind, doc in enumerate([doc_p, doc_n]):
+                    guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_ind)
+                    text_b = convert_to_unicode(doc)
+                    examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                 text_b=text_b, 
+                                                 label=str(labels[doc_ind]))) 
         return examples
 
-    def _create_examples(self, data, set_type):
+    def _create_examples(self, data, set_type, is_duoBERT = False, 
+                         max_mono_docs = 1000, max_duo_docs = 30):
         """Creates examples for the training(2) and dev sets."""
         examples = []
         for (i, query_id) in enumerate(data):
             query, qrels, doc_titles = data[query_id]
             text_a = convert_to_unicode(query)
-            doc_titles = doc_titles[:1000] #TODO generalize
+            if is_duoBERT:
+                doc_titles = doc_titles[:max_duo_docs]
+            else:
+                doc_titles = doc_titles[:max_mono_docs]
             if set_type == "eval":
                 labels = [0]
             else:
@@ -318,18 +382,38 @@ class MsmarcoProcessor(DataProcessor):
                   1 if doc_title in qrels else 0 
                   for doc_title in doc_titles
                 ]
-            for doc_ind, doc_title in enumerate(doc_titles):
-                guid = "%s-%s-%s-%s" % (set_type, query_id, doc_ind, doc_title)
-                text_b = convert_to_unicode(self.collection[doc_title])
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(labels[doc_ind])))
+            if is_duoBERT:
+                for doc_ind_b, doc_title_b in enumerate(doc_titles):
+                    for doc_ind_c, doc_title_c in enumerate(doc_titles):
+                        if doc_ind_b == doc_ind_c:
+                            continue
+                        guid = "%s-%s-%s-%s-%s-%s" % (set_type, query_id, 
+                            doc_ind_b, doc_title_b, doc_ind_c, doc_title_c)
+                        text_b = convert_to_unicode(
+                            self.collection[doc_title_b])
+                        text_c = convert_to_unicode(
+                            self.collection[doc_title_c])
+                        examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                     text_b=text_b, 
+                                                     text_c=text_c, 
+                                                     label=str(
+                                                        labels[doc_ind_b])))
+            else:
+                for doc_ind, doc_title in enumerate(doc_titles):
+                    guid = "%s-%s-%s-%s" % (set_type, query_id, doc_ind, 
+                        doc_title)
+                    text_b = convert_to_unicode(self.collection[doc_title])
+                    examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                 text_b=text_b, 
+                                                 label=str(labels[doc_ind])))
         return examples
 
 class TreccarProcessor(DataProcessor):
     """Processor for the TREC-CAR data set."""
 
     def load_qrels(self, path):
-        """Loads qrels into a dict of key: query_id, value: list of relevant doc ids."""
+        """Loads qrels into a dict of key: query_id, value: list of relevant 
+        doc ids."""
         qrels = collections.defaultdict(set)
         with open(path) as f:
             for i, line in enumerate(f):
@@ -341,10 +425,11 @@ class TreccarProcessor(DataProcessor):
         return qrels
 
     def load_run(self, path):
-        """Loads run into a dict of key: query_id, value: list of candidate doc ids."""
+        """Loads run into a dict of key: query_id, value: list of candidate 
+        doc ids."""
 
-        # We want to preserve the order of runs so we can pair the run file with the
-        # TFRecord file.
+        # We want to preserve the order of runs so we can pair the run file 
+        # with the TFRecord file.
         run = collections.OrderedDict()
         with open(path) as f:
             for i, line in enumerate(f):
@@ -364,13 +449,18 @@ class TreccarProcessor(DataProcessor):
         return sorted_run
 
     def load_collection(self, data_dir):
-        """Loads TREC-CAR's paraghaphs into a dict of key: title, value: paragraph."""
+        """Loads TREC-CAR's paraghaphs into a dict of key: title, value: 
+        paragraph."""
         self.corpus = {}
 
         APPROX_TOTAL_PARAGRAPHS = 30000000
-        with open(os.path.join(data_dir, "paragraphCorpus/dedup.articles-paragraphs.cbor"), 'rb') as f:
-            for p in tqdm(trec_car_classes.iter_paragraphs(f), total=APPROX_TOTAL_PARAGRAPHS):
-                para_txt = [elem.text if isinstance(elem, trec_car_classes.ParaText)
+        with open(os.path.join(data_dir, \
+            "paragraphCorpus/dedup.articles-paragraphs.cbor"),
+            'rb') as f:
+            for p in tqdm(trec_car_classes.iter_paragraphs(f), 
+                          total=APPROX_TOTAL_PARAGRAPHS):
+                para_txt = [elem.text if isinstance(elem, trec_car_classes.
+                                                    ParaText) \
                             else elem.anchor_text for elem in p.bodies]
                 self.corpus[p.para_id] = ' '.join(para_txt)
 
@@ -429,8 +519,11 @@ class TreccarProcessor(DataProcessor):
                 guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
                 text_b = convert_to_unicode(doc.content)
                 docid_dict[doc.docid] = text_b
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=str(0)))
+                # Note that len_gt_titles needs to be populated with a random 
+                # numbert as it vital to properly functioning in TREC-CAR
+                examples.append(InputExample(guid=guid, text_a=text_a, 
+                                             text_b=text_b, label=str(0), 
+                                             len_gt_titles=42)) 
         return examples, docid_dict
 
     def get_labels(self):
@@ -457,7 +550,8 @@ class TreccarProcessor(DataProcessor):
                 text_b = convert_to_unicode(self.corpus[doc_title])
                 examples.append(
                     InputExample(guid=guid, text_a=text_a, text_b=text_b, 
-                                 label=str(labels[doc_ind]), len_gt_titles=len(qrels)))
+                                 label=str(labels[doc_ind]), 
+                                 len_gt_titles=len(qrels)))
         return (examples, oq_list)
 
 def _create_int64_feature(value):
@@ -473,18 +567,22 @@ def convert_examples_to_features(examples, tokenizer,
                                  pad_on_left=False,
                                  pad_token=0,
                                  pad_token_segment_id=0,
-                                 mask_padding_with_zero=True, #Beyond here unused in new transformers
+                                 mask_padding_with_zero=True,
                                  sequence_a_segment_id=0, 
                                  sequence_b_segment_id=1, 
+                                 sequence_c_segment_id=0,
                                  cls_token_at_end=False, 
                                  cls_token='[CLS]',
                                  cls_token_segment_id=1,
                                  sep_token='[SEP]',
                                  sep_token_extra=False,
                                  max_len_A = 64 - 2,
-                                 max_len_B = 448 - 1,
+                                 max_len_B = 448 - 1, 
                                  use_tfrecord = False,
-                                 writer = None
+                                 writer = None,
+                                 is_duoBERT = False,
+                                 is_tokenizers = False,
+                                 is_encode_batch = False
                                  ):
     """
     Loads a data file into a list of ``InputFeatures``
@@ -526,35 +624,85 @@ def convert_examples_to_features(examples, tokenizer,
 
     features = []
     guid_list = []
+    batch_size = 10000
     for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
+        if ex_index % batch_size == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
+            if is_encode_batch:
+                batch_tokens_a = list(map(lambda bta: bta.ids, tokenizer.encode_batch(list(
+                    map(lambda ex: ex.text_a, examples[ex_index:ex_index + batch_size])))))
+                batch_tokens_b = list(map(lambda btb: btb.ids[1:], tokenizer.encode_batch(list(
+                    map(lambda ex: ex.text_b, examples[ex_index:ex_index + batch_size])))))
+                if is_duoBERT:
+                    batch_tokens_c = list(map(lambda btc: btc.ids[1:], tokenizer.encode_batch(list(
+                        map(lambda ex: ex.text_c, examples[ex_index:ex_index + batch_size])))))
         if is_tf_dataset:
             example = processor.get_example_from_tensor_dict(example)
-
-        tokens_a = tokenizer.tokenize(example.text_a)
-
-        tokens_b = tokenizer.tokenize(example.text_b)
-        tokens = tokens_a[:max_len_A - int(sep_token_extra)] + [sep_token]
+        if is_encode_batch:
+            tokens_a = batch_tokens_a[ex_index%batch_size]
+            tokens_b = batch_tokens_b[ex_index%batch_size]
+        elif is_tokenizers:
+            tokens_a = tokenizer.encode(example.text_a).ids
+            tokens_b = tokenizer.encode(example.text_b).ids[1:]
+        else:
+            tokens_a = tokenizer.tokenize(example.text_a)
+            tokens_b = tokenizer.tokenize(example.text_b)
+        tokens = tokens_a[:max_len_A - int(sep_token_extra) + int(is_tokenizers)] 
+        if is_tokenizers:
+            tokens[-1] = 102
+        else:
+            tokens += [sep_token]
         if sep_token_extra:
             # roberta uses an extra separator b/w pairs of sentences
             tokens += [sep_token]
-        segment_ids = [sequence_a_segment_id] * len(tokens)
-
-        if tokens_b:
-            tokens += tokens_b[:max_len_B - int(sep_token_extra)] + [sep_token]
-            if sep_token_extra:
-                tokens += [sep_token]
-            segment_ids += [sequence_b_segment_id] * (len(tokens) - len(segment_ids))
+        segment_ids = ([cls_token_segment_id] * (int(is_tokenizers))) + ([sequence_a_segment_id] * (len(tokens) - int(is_tokenizers)))
+        if is_duoBERT:
+            if is_encode_batch:
+                tokens_c = batch_tokens_c[ex_index%batch_size]
+            else:
+                tokens_c = tokenizer.encode(example.text_c).ids[1:] if is_tokenizers else tokenizer.tokenize(example.text_c)
+            max_len_b_c = ((max_length - len(tokens)) // 2) 
+            if tokens_b:
+                tokens += tokens_b[:max_len_b_c - int(sep_token_extra)]
+                if is_tokenizers:
+                    tokens[-1] = 102
+                else:
+                    tokens += [sep_token]
+                if sep_token_extra:
+                    tokens += [sep_token]
+                segment_ids += [sequence_b_segment_id] * (len(tokens) - len(segment_ids))
+            if tokens_c:
+                tokens += tokens_c[:max_len_b_c - int(sep_token_extra)]
+                if is_tokenizers:
+                    tokens[-1] = 102
+                else:
+                    tokens += [sep_token]
+                if sep_token_extra:
+                    tokens += [sep_token]
+                segment_ids += [sequence_c_segment_id] * (len(tokens) - len(segment_ids))
+        else:
+            if tokens_b:
+                tokens += tokens_b[:max_length - len(tokens) - int(sep_token_extra)] #TODO earlier: max_len_B - int(sep_token_extra)
+                if is_tokenizers:
+                    tokens[-1] = 102
+                else:
+                    tokens += [sep_token]
+                if sep_token_extra:
+                    tokens += [sep_token]
+                segment_ids += [sequence_b_segment_id] * (len(tokens) - \
+                    len(segment_ids))
 
         if cls_token_at_end:
             tokens = tokens + [cls_token]
             segment_ids = segment_ids + [cls_token_segment_id]
-        else:
+        elif not is_tokenizers:
             tokens = [cls_token] + tokens
             segment_ids = [cls_token_segment_id] + segment_ids
 
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        if is_tokenizers:
+            input_ids = tokens
+        else:
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.

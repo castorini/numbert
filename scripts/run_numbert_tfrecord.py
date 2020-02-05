@@ -64,6 +64,16 @@ from numbert.utils.data_utils import tf_dl
 
 import tensorflow as tf
 
+try:
+    from tokenizers import BertWordPieceTokenizer
+    FAST_TOKENIZERS = True
+except:
+    FAST_TOKENIZERS = False
+# import torch_xla.core.xla_model as xm
+# import torch_xla.debug.metrics as met
+# import torch_xla.distributed.parallel_loader as pl
+# import torch_xla.distributed.xla_multiprocessing as xmp
+
 logger = logging.getLogger(__name__)
 
 ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, XLNetConfig, XLMConfig, 
@@ -76,6 +86,10 @@ MODEL_CLASSES = {
     'roberta': (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizer),
     'distilbert': (DistilBertConfig, DistilBertForSequenceClassification, DistilBertTokenizer)
 }
+
+if FAST_TOKENIZERS:
+    MODEL_CLASSES['bert'] = (BertConfig, BertForSequenceClassification, BertWordPieceTokenizer)
+
 
 original_query_list = None # maintains list of original queries, which are used especially during TREC-CAR output
 
@@ -181,6 +195,8 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                 if args.model_type != 'distilbert':
                     inputs['token_type_ids'] = batch[2] if args.model_type in ['bert', 'xlnet'] else None  # XLM, DistilBERT and RoBERTa don't use segment_ids
                 batch_guids = batch[4]
+                if args.task_name == "treccar":
+                    batch_len_gt_titles = batch[5]
             outputs = model(**inputs)
             loss = outputs[0]  # model outputs are always tuple in transformers (see doc)
             
@@ -340,9 +356,18 @@ def evaluate(args, model, tokenizer, prefix=""):
                 else:
                     numbert_labels[guid[1]] = {guid[3]}
             if guid[1] in numbert_predictions:
-                numbert_predictions[guid[1]].append((guid[3], preds[ind][1]))
+                # each guid[3] has a scores for each paired doc having guid[3] in left
+                if guid[3] in numbert_predictions[guid[1]]:
+                    numbert_predictions[guid[1]][guid[3]] += preds[ind][1]
+                else:
+                    numbert_predictions[guid[1]][guid[3]] = preds[ind][1]
             else:
-                numbert_predictions[guid[1]] = [(guid[3], preds[ind][1])]
+                numbert_predictions[guid[1]] = {}
+                numbert_predictions[guid[1]][guid[3]] = preds[ind][1]
+
+        # converts {a:b, c:d} to [(a,b), (c,d)]
+        for qid in numbert_predictions:
+            numbert_predictions[qid] = list(numbert_predictions[qid].items())  
         numbert_predictions_no_score = {}
         for key in numbert_predictions:
             numbert_predictions[key] = sorted(numbert_predictions[key], key=lambda tup: tup[1], reverse=True)
@@ -448,9 +473,9 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
             logger.info("Loading Collection")
             processor.load_collection(args.data_dir)
         if args.test:
-            examples = processor.get_test_examples(args.data_dir)
+            examples = processor.get_test_examples(args.data_dir, is_duoBERT = args.is_duoBERT)
         else:
-            examples = processor.get_dev_examples(args.data_dir) if evaluate else processor.get_train_examples(args.data_dir)
+            examples = processor.get_dev_examples(args.data_dir, is_duoBERT = args.is_duoBERT) if evaluate else processor.get_train_examples(args.data_dir, is_duoBERT = args.is_duoBERT)
         if args.task_name == "treccar":
             (examples, original_query_list) = examples
         if args.use_tfrecord:
@@ -462,13 +487,16 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 max_length=args.max_seq_length,
                                                 output_mode=output_mode,
                                                 pad_on_left=bool(args.model_type in ['xlnet']),                 # pad on the left for xlnet
-                                                pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
+                                                pad_token=0 if FAST_TOKENIZERS else tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
                                                 pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
                                                 cls_token_segment_id=2 if args.model_type in ['xlnet'] else 1,
                                                 cls_token_at_end=bool(args.model_type in ['xlnet']),
                                                 use_tfrecord = args.use_tfrecord,
                                                 writer = writer,
-                                                task = args.task_name)
+                                                task = args.task_name,
+                                                is_duoBERT = args.is_duoBERT,
+                                                is_tokenizers = FAST_TOKENIZERS and args.model_type == 'bert',
+                                                is_encode_batch = FAST_TOKENIZERS and args.encode_batch)
         if args.use_tfrecord:
             guid_list = features
         if args.local_rank in [-1, 0]:
@@ -528,6 +556,8 @@ def main():
                         help="Whether to run test")
     parser.add_argument("--use_tfrecord", action="store_true",
                         help="Whether to use TFRecord")
+    parser.add_argument("--is_duoBERT", action="store_true",
+                        help="Whether to use duoBERT")
 
     ## Other parameters
     parser.add_argument("--config_name", default="", type=str,
@@ -547,6 +577,8 @@ def main():
                         help="Rul evaluation during training at each logging step.")
     parser.add_argument("--do_lower_case", action='store_true',
                         help="Set this flag if you are using an uncased model.")
+    parser.add_argument("--encode_batch", action='store_true',
+                        help="Set this flag if you are using an fast tokenizers' batch encoding.")
 
     parser.add_argument("--per_gpu_train_batch_size", default=8, type=int,
                         help="Batch size per GPU/CPU for training.")
@@ -672,7 +704,14 @@ def main():
     args.model_type = args.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
     config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
-    tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
+
+    if FAST_TOKENIZERS and args.model_type == "bert":
+        tokenizer = tokenizer_class(os.path.join(args.model_name_or_path, "vocab.txt"), lowercase=True)
+        logger.info("Fast tokenizers")
+    else:
+        tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
+
+
     model = model_class.from_pretrained(args.model_name_or_path, from_tf=bool('.ckpt' in args.model_name_or_path), config=config)
 
     if args.local_rank == 0:
@@ -701,21 +740,32 @@ def main():
         # They can then be reloaded using `from_pretrained()`
         model_to_save = model.module if hasattr(model, 'module') else model  # Take care of distributed/parallel training
         model_to_save.save_pretrained(args.output_dir)
-        tokenizer.save_pretrained(args.output_dir)
+
+        if FAST_TOKENIZERS and args.model_type == "bert":
+            tokenizer.save(args.output_dir, "bert_tokenizer")
+        else:
+            tokenizer.save_pretrained(args.output_dir)
 
         # Good practice: save your training arguments together with the trained model
         torch.save(args, os.path.join(args.output_dir, 'training_args.bin'))
 
         # Load a trained model and vocabulary that you have fine-tuned
         model = model_class.from_pretrained(args.output_dir)
-        tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+        if FAST_TOKENIZERS and args.model_type == "bert":
+            tokenizer = tokenizer_class(os.path.join(args.model_name_or_path, "vocab.txt"), lowercase=True)
+        else:
+            tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         model.to(args.device)
 
 
     # Evaluation
     results = {}
     if args.do_eval and args.local_rank in [-1, 0]:
-        tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+        if FAST_TOKENIZERS and args.model_type == "bert":
+            tokenizer = tokenizer_class(os.path.join(args.model_name_or_path, "vocab.txt"), lowercase=True)
+            logger.info("Fast tokenizers")
+        else:
+            tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
             checkpoints = list(os.path.dirname(c) for c in sorted(glob.glob(args.output_dir + '/**/' + WEIGHTS_NAME, recursive=True)))
