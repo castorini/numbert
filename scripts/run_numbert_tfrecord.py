@@ -38,7 +38,7 @@ except:
 
 from tqdm import tqdm, trange
 
-from transformers import (WEIGHTS_NAME, BertConfig,
+from transformers import (WEIGHTS_NAME, AdamW, BertConfig,
                                   BertForSequenceClassification, BertTokenizer,
                                   RobertaConfig,
                                   RobertaForSequenceClassification,
@@ -49,14 +49,8 @@ from transformers import (WEIGHTS_NAME, BertConfig,
                                   XLNetTokenizer,
                                   DistilBertConfig,
                                   DistilBertForSequenceClassification,
-                                  DistilBertTokenizer)
-
-from transformers import AdamW
-
-try:# old transformers remove
-    from transformers import WarmupLinearSchedule as get_linear_schedule_with_warmup
-except:
-    from transformers import get_linear_schedule_with_warmup
+                                  DistilBertTokenizer,
+                                  get_linear_schedule_with_warmup)
 
 from numbert.utils.utils_numbert import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)  
@@ -479,7 +473,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         if args.task_name == "treccar":
             (examples, original_query_list) = examples
         if args.use_tfrecord:
-            writer = tf.python_io.TFRecordWriter(dataset)
+            writer = tf.io.TFRecordWriter(dataset)
 
         features = convert_examples_to_features(examples,
                                                 tokenizer,

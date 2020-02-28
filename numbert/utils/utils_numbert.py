@@ -365,7 +365,7 @@ class MsmarcoProcessor(DataProcessor):
         return examples
 
     def _create_examples(self, data, set_type, is_duoBERT = False, 
-                         max_mono_docs = 1000, max_duo_docs = 30):
+                         max_mono_docs = 1000, max_duo_docs = 50):
         """Creates examples for the training(2) and dev sets."""
         examples = []
         for (i, query_id) in enumerate(data):
@@ -475,7 +475,7 @@ class TreccarProcessor(DataProcessor):
             data[query_id] = (relevant_doc_ids, candidate_doc_ids)
         return data
 
-    def get_train_examples(self, data_dir, is_qrels = True):
+    def get_train_examples(self, data_dir, is_qrels = True, is_duoBERT = False):
         """See base class."""
         qrels = None
         if is_qrels:
@@ -486,56 +486,81 @@ class TreccarProcessor(DataProcessor):
 
         return self._create_examples(eval_data, "train")
 
-    def get_dev_examples(self, data_dir, is_qrels = True):
+    def get_dev_examples(self, data_dir, is_qrels = True, is_duoBERT = False):
         """See base class."""
         qrels = None
         if is_qrels:
             qrels = self.load_qrels(os.path.join(data_dir,"dev.qrels"))
-
-        run = self.load_run(os.path.join(data_dir,"dev.run"))
+        if is_duoBERT:
+            run = self.load_run(os.path.join(data_dir,"dev.monobert.run"))
+        else:
+            run = self.load_run(os.path.join(data_dir,"dev.run"))
         dev_data = self.merge(qrels=qrels, run=run)
 
-        return self._create_examples(dev_data, "dev")
+        return self._create_examples(dev_data, "dev", is_duoBERT)
 
-    def get_test_examples(self, data_dir, is_qrels = True):
+    def get_test_examples(self, data_dir, is_qrels = True, is_duoBERT = False):
         """See base class."""
         qrels = None
         if is_qrels:
             qrels = self.load_qrels(os.path.join(data_dir,"test.qrels"))
 
-        run = self.load_run(os.path.join(data_dir,"test.run"))
+        if is_duoBERT:
+            run = self.load_run(os.path.join(data_dir,"test.monobert.run"))
+        else:
+            run = self.load_run(os.path.join(data_dir,"test.run"))
         eval_data = self.merge(qrels=qrels, run=run)
 
-        return self._create_examples(eval_data, "eval")
+        return self._create_examples(eval_data, "eval", is_duoBERT)
 
 
-    def get_examples_online(self, queries, data):
+    def get_examples_online(self, queries, data, is_duoBERT = False):
         """Creates examples for the online interactive setting."""
         examples = []
         docid_dict = {}
         for qid in queries:
             text_a = convert_to_unicode(queries[qid])
-            for doc_ind, doc in enumerate(data[qid]):
-                guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
-                text_b = convert_to_unicode(doc.content)
-                docid_dict[doc.docid] = text_b
-                # Note that len_gt_titles needs to be populated with a random 
-                # numbert as it vital to properly functioning in TREC-CAR
-                examples.append(InputExample(guid=guid, text_a=text_a, 
-                                             text_b=text_b, label=str(0), 
-                                             len_gt_titles=42)) 
+            if is_duoBERT:
+                for doc_ind_b, doc_b in enumerate(data[qid]):
+                    for doc_ind_c, doc_c in enumerate(data[qid]):
+                        if doc_ind_b == doc_ind_c:
+                            continue
+                        guid = "%s-%s-%s-%s-%s-%s" % ("online", qid, doc_ind_b, 
+                                                      doc_b.docid, doc_ind_c, doc_c.docid)
+                        text_b = convert_to_unicode(doc_b.content)
+                        text_c = convert_to_unicode(doc_c.content)
+                        docid_dict[doc_b.docid] = text_b
+                        # Note that len_gt_titles needs to be populated with a random 
+                        # numbert as it vital to properly functioning in TREC-CAR
+                        examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                     text_b=text_b, text_c=text_c,
+                                                     label=str(0), 
+                                                     len_gt_titles=42)) 
+            else:
+                for doc_ind, doc in enumerate(data[qid]):
+                    guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
+                    text_b = convert_to_unicode(doc.content)
+                    docid_dict[doc.docid] = text_b
+                    examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                 text_b=text_b, label=str(0), 
+                                                 len_gt_titles=42)) 
         return examples, docid_dict
 
     def get_labels(self):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, data, set_type):
+    def _create_examples(self, data, set_type, is_duoBERT = False, 
+                         max_mono_docs = 1000, max_duo_docs = 50):
         """Creates examples for the training and dev sets."""
         examples = []
         oq_list = []
         for (i, query) in enumerate(data):
             qrels, doc_titles = data[query]
+            if is_duoBERT:
+                doc_titles = doc_titles[:max_duo_docs]
+            else:
+                doc_titles = doc_titles[:max_mono_docs]
             oq_list.append(query)
             query = query.replace('enwiki:', '')
             query = query.replace('%20', ' ')
@@ -545,13 +570,29 @@ class TreccarProcessor(DataProcessor):
               1 if doc_title in qrels else 0 
               for doc_title in doc_titles
             ]
-            for doc_ind, doc_title in enumerate(doc_titles):
-                guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_title)
-                text_b = convert_to_unicode(self.corpus[doc_title])
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, 
-                                 label=str(labels[doc_ind]), 
-                                 len_gt_titles=len(qrels)))
+            if is_duoBERT:
+                for doc_ind_b, doc_title_b in enumerate(doc_titles):
+                    for doc_ind_c, doc_title_c in enumerate(doc_titles):
+                        if doc_ind_b == doc_ind_c:
+                            continue
+                        guid = "%s-%s-%s-%s-%s-%s" % (set_type, i,
+                            doc_ind_b, doc_title_b, doc_ind_c, doc_title_c)
+                        text_b = convert_to_unicode(self.corpus[doc_title_b])
+                        text_c = convert_to_unicode(self.corpus[doc_title_c])
+                        examples.append(InputExample(guid=guid, text_a=text_a, 
+                                                     text_b=text_b, 
+                                                     text_c=text_c, 
+                                                     label=str(
+                                                        labels[doc_ind_b]),
+                                                     len_gt_titles=len(qrels)))
+            else:
+                for doc_ind, doc_title in enumerate(doc_titles):
+                    guid = "%s-%s-%s-%s" % (set_type, i, doc_ind, doc_title)
+                    text_b = convert_to_unicode(self.corpus[doc_title])
+                    examples.append(
+                        InputExample(guid=guid, text_a=text_a, text_b=text_b, 
+                                     label=str(labels[doc_ind]), 
+                                     len_gt_titles=len(qrels)))
         return (examples, oq_list)
 
 def _create_int64_feature(value):
@@ -576,7 +617,7 @@ def convert_examples_to_features(examples, tokenizer,
                                  cls_token_segment_id=1,
                                  sep_token='[SEP]',
                                  sep_token_extra=False,
-                                 max_len_A = 64 - 2,
+                                 max_len_A = 64,
                                  max_len_B = 448 - 1, 
                                  use_tfrecord = False,
                                  writer = None,
@@ -647,21 +688,24 @@ def convert_examples_to_features(examples, tokenizer,
         else:
             tokens_a = tokenizer.tokenize(example.text_a)
             tokens_b = tokenizer.tokenize(example.text_b)
-        tokens = tokens_a[:max_len_A - int(sep_token_extra) + int(is_tokenizers)] 
+        tokens = tokens_a[:max_len_A - int(sep_token_extra) - 2*int(not is_tokenizers)] # cls,sep not included if not tokenizers
         if is_tokenizers:
-            tokens[-1] = 102
+            tokens[-1] = 102 # force last token to be sep in tokenizers
         else:
             tokens += [sep_token]
         if sep_token_extra:
             # roberta uses an extra separator b/w pairs of sentences
             tokens += [sep_token]
-        segment_ids = ([cls_token_segment_id] * (int(is_tokenizers))) + ([sequence_a_segment_id] * (len(tokens) - int(is_tokenizers)))
+        segment_ids = ([cls_token_segment_id] * (int(is_tokenizers))) + \
+                                 ([sequence_a_segment_id] * (len(tokens) - int(is_tokenizers)))
         if is_duoBERT:
             if is_encode_batch:
                 tokens_c = batch_tokens_c[ex_index%batch_size]
             else:
                 tokens_c = tokenizer.encode(example.text_c).ids[1:] if is_tokenizers else tokenizer.tokenize(example.text_c)
-            max_len_b_c = ((max_length - len(tokens)) // 2) 
+
+            # - (not is_tokenizers) because cls and sep token missing in transformers
+            max_len_b_c = (((max_length - int(not is_tokenizers)) - len(tokens)) // 2) - int(not is_tokenizers) 
             if tokens_b:
                 tokens += tokens_b[:max_len_b_c - int(sep_token_extra)]
                 if is_tokenizers:
@@ -682,15 +726,14 @@ def convert_examples_to_features(examples, tokenizer,
                 segment_ids += [sequence_c_segment_id] * (len(tokens) - len(segment_ids))
         else:
             if tokens_b:
-                tokens += tokens_b[:max_length - len(tokens) - int(sep_token_extra)] #TODO earlier: max_len_B - int(sep_token_extra)
+                tokens += tokens_b[:max_length - 2*int(not is_tokenizers) - len(tokens) - int(sep_token_extra)] 
                 if is_tokenizers:
                     tokens[-1] = 102
                 else:
                     tokens += [sep_token]
                 if sep_token_extra:
                     tokens += [sep_token]
-                segment_ids += [sequence_b_segment_id] * (len(tokens) - \
-                    len(segment_ids))
+                segment_ids += [sequence_b_segment_id] * (len(tokens) - len(segment_ids))
 
         if cls_token_at_end:
             tokens = tokens + [cls_token]

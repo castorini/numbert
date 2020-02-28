@@ -18,28 +18,27 @@ import queue
 import threading
 
 import tensorflow as tf
-tf.enable_eager_execution()
 import torch
 
 class TFRecordDataLoader(object):
     def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco"):
-        tf.set_random_seed(seed)
+        tf.random.set_seed(seed)
         if isinstance(records, str):
             records  = [records]
 
         if task == "treccar":
-            self.record_converter = Record2Example({"input_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "attention_mask": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "token_type_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "labels" : tf.FixedLenFeature([1], tf.int64),
-                                                    "guid" : tf.FixedLenFeature([1], tf.int64),
-                                                    "len_gt_titles" : tf.FixedLenFeature([1], tf.int64)})
+            self.record_converter = Record2Example({"input_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "attention_mask": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "token_type_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "labels" : tf.io.FixedLenFeature([1], tf.int64),
+                                                    "guid" : tf.io.FixedLenFeature([1], tf.int64),
+                                                    "len_gt_titles" : tf.io.FixedLenFeature([1], tf.int64)})
         else:
-            self.record_converter = Record2Example({"input_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "attention_mask": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "token_type_ids": tf.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "labels" : tf.FixedLenFeature([1], tf.int64),
-                                                    "guid" : tf.FixedLenFeature([1], tf.int64)})
+            self.record_converter = Record2Example({"input_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "attention_mask": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "token_type_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                                                    "labels" : tf.io.FixedLenFeature([1], tf.int64),
+                                                    "guid" : tf.io.FixedLenFeature([1], tf.int64)})
 
 
         #Instantiate dataset according to original BERT implementation
@@ -49,7 +48,7 @@ class TFRecordDataLoader(object):
 
             # use sloppy tfrecord dataset
             self.dataset = self.dataset.apply(
-                tf.contrib.data.parallel_interleave(
+                tf.data.experimental.parallel_interleave(
                     tf.data.TFRecordDataset,
                     sloppy=train,
                     cycle_length=min(num_workers, len(records))))
@@ -61,7 +60,7 @@ class TFRecordDataLoader(object):
         loader_args = {'batch_size': batch_size, 
                        'num_parallel_batches': num_workers,
                        'drop_remainder': train}
-        self.dataloader = self.dataset.apply(tf.contrib.data.map_and_batch(self.record_converter, **loader_args))
+        self.dataloader = self.dataset.apply(tf.data.experimental.map_and_batch(self.record_converter, **loader_args))
         self.threaded_dl = threaded_dl
         self.num_workers = num_workers
 
@@ -81,10 +80,10 @@ class Record2Example(object):
 
     def __call__(self, record):
         """Decodes a BERT TF record to a TF example."""
-        example = tf.parse_single_example(record, self.feature_map)
+        example = tf.io.parse_single_example(record, self.feature_map)
         for k, v in list(example.items()):
             if v.dtype == tf.int64:
-                example[k] = tf.to_int64(v) #TODO check why it was int32 originally
+                example[k] = tf.cast(v, tf.int64) #TODO check why it was int32 originally
         return example
 
 def convert_tf_example_to_torch_tensors(example):
