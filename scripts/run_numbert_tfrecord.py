@@ -102,13 +102,14 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     if args.use_tfrecord:
-        data_set_args = {'batch_size': args.per_gpu_train_batch_size,
-                 'max_seq_len': args.max_seq_length,
-                 'train': True,
-                 'num_workers': max(args.num_workers, 1),
-                 'seed': args.seed + args.local_rank + 1,
-                 'threaded_dl': args.num_workers > 0
-                 }
+        data_set_args = {'batch_size': args.train_batch_size if args.local_rank == -1 \
+                                        else args.per_gpu_train_batch_size, # todo check if words for distributed
+                         'max_seq_len': args.max_seq_length,
+                         'train': True,
+                         'num_workers': max(args.num_workers, 1),
+                         'seed': args.seed + args.local_rank + 1,
+                         'threaded_dl': args.num_workers > 0
+                         }
         train_dataloader = tf_dl.TFRecordDataLoader(train_dataset,
                                                     **data_set_args) #here train dataset is just path to tf record file
     else:
@@ -162,7 +163,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
     logger.info("  Total optimization steps = %d", t_total)
 
     global_step = 0
-    tr_loss, logging_loss = 0.0, 0.0
+    tr_loss, logging_loss, print_loss = 0.0, 0.0, 0.0
     model.zero_grad()
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
@@ -234,6 +235,10 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                     torch.save(args, os.path.join(output_dir, 'training_args.bin'))
                     logger.info("Saving model checkpoint to %s", output_dir)
 
+                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.print_loss_steps == 0:
+                    logging.info("Loss: %f", (tr_loss - print_loss)/args.print_loss_steps)
+                    print_loss = tr_loss
+
             if args.tpu:
                 scheduler.step()
                 args.xla_model.optimizer_step(optimizer, barrier=True)
@@ -267,7 +272,7 @@ def evaluate(args, model, tokenizer, prefix=""):
             os.makedirs(eval_output_dir)
 
         # multi-gpu training (should be after apex fp16 initialization)
-        if args.n_gpu > 1:
+        if args.n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
             model = torch.nn.DataParallel(model)
 
 
@@ -481,7 +486,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 max_length=args.max_seq_length,
                                                 output_mode=output_mode,
                                                 pad_on_left=bool(args.model_type in ['xlnet']),                 # pad on the left for xlnet
-                                                pad_token=0 if FAST_TOKENIZERS else tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
+                                                pad_token=0 if (FAST_TOKENIZERS and args.model_type == 'bert') else tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
                                                 pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
                                                 cls_token_segment_id=2 if args.model_type in ['xlnet'] else 1,
                                                 cls_token_at_end=bool(args.model_type in ['xlnet']),
@@ -490,7 +495,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 task = args.task_name,
                                                 is_duoBERT = args.is_duoBERT,
                                                 is_tokenizers = FAST_TOKENIZERS and args.model_type == 'bert',
-                                                is_encode_batch = FAST_TOKENIZERS and args.encode_batch)
+                                                is_encode_batch = FAST_TOKENIZERS and args.model_type == 'bert' and args.encode_batch)
         if args.use_tfrecord:
             guid_list = features
         if args.local_rank in [-1, 0]:
@@ -599,6 +604,8 @@ def main():
                         help="Log every X updates steps.")
     parser.add_argument('--save_steps', type=int, default=50,
                         help="Save checkpoint every X updates steps.")
+    parser.add_argument('--print_loss_steps', type=int, default=50,
+                        help="Print loss every X updates steps.")
     parser.add_argument("--eval_all_checkpoints", action='store_true',
                         help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number")
     parser.add_argument("--no_cuda", action='store_true',
@@ -700,7 +707,7 @@ def main():
     config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
 
     if FAST_TOKENIZERS and args.model_type == "bert":
-        tokenizer = tokenizer_class(os.path.join(args.model_name_or_path, "vocab.txt"), lowercase=True)
+        tokenizer = tokenizer_class(os.path.join(args.output_dir, "vocab.txt"), lowercase=True)
         logger.info("Fast tokenizers")
     else:
         tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
@@ -746,7 +753,7 @@ def main():
         # Load a trained model and vocabulary that you have fine-tuned
         model = model_class.from_pretrained(args.output_dir)
         if FAST_TOKENIZERS and args.model_type == "bert":
-            tokenizer = tokenizer_class(os.path.join(args.model_name_or_path, "vocab.txt"), lowercase=True)
+            tokenizer = tokenizer_class(os.path.join(args.output_dir, "vocab.txt"), lowercase=True)
         else:
             tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         model.to(args.device)
@@ -756,7 +763,7 @@ def main():
     results = {}
     if args.do_eval and args.local_rank in [-1, 0]:
         if FAST_TOKENIZERS and args.model_type == "bert":
-            tokenizer = tokenizer_class(os.path.join(args.model_name_or_path, "vocab.txt"), lowercase=True)
+            tokenizer = tokenizer_class(os.path.join(args.output_dir, "vocab.txt"), lowercase=True)
             logger.info("Fast tokenizers")
         else:
             tokenizer = tokenizer_class.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
