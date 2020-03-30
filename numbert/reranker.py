@@ -151,8 +151,7 @@ class MonoBERT(Reranker):
             cls_token_segment_id=2 if self.mono_model_type in ['xlnet'] else 1,
             cls_token_at_end=bool(self.mono_model_type in ['xlnet']),
             is_duoBERT=False,
-            is_tokenizers=(self.mono_model_type == "bert"),
-            is_encode_batch=(self.mono_model_type == "bert"))
+            is_encode_batch=False)
 
         # Evaluate
         model_preds = online_eval(self.mono_model, self.mono_model_tokenizer, 
@@ -276,8 +275,7 @@ class DuoBERT(MonoBERT):
             cls_token_segment_id=2 if self.duo_model_type in ['xlnet'] else 1,
             cls_token_at_end=bool(self.duo_model_type in ['xlnet']),
             is_duoBERT=True,
-            is_tokenizers=(self.duo_model_type == 'bert'),
-            is_encode_batch=(self.duo_model_type == 'bert'))
+            is_encode_batch=False)
 
         # Evaluate
         model_preds = online_eval(self.duo_model, self.duo_model_tokenizer, 

@@ -308,14 +308,14 @@ class MsmarcoProcessor(DataProcessor):
             text_a = convert_to_unicode(queries[qid])
             if is_duoBERT:
                 for doc_ind_b, doc_b in enumerate(data[qid]):
-                    docid_dict[doc_b.docid] = convert_to_unicode(doc_b.content)
+                    docid_dict[doc_b.docid] = convert_to_unicode(doc_b.raw)
                     for doc_ind_c, doc_c in enumerate(data[qid]):
                         if doc_ind_b == doc_ind_c:
                             continue
                         guid = "%s-%s-%s-%s-%s-%s" % ("online", qid, doc_ind_b,
                             doc_b.docid, doc_ind_c, doc_c.docid)
-                        text_b = convert_to_unicode(doc_b.content)
-                        text_c = convert_to_unicode(doc_c.content)
+                        text_b = convert_to_unicode(doc_b.raw)
+                        text_c = convert_to_unicode(doc_c.raw)
                         examples.append(InputExample(guid=guid, text_a=text_a, 
                                                      text_b=text_b, 
                                                      text_c=text_c, 
@@ -323,7 +323,7 @@ class MsmarcoProcessor(DataProcessor):
             else:
                 for doc_ind, doc in enumerate(data[qid]):
                     guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
-                    text_b = convert_to_unicode(doc.content)
+                    text_b = convert_to_unicode(doc.raw)
                     docid_dict[doc.docid] = text_b
                     examples.append(InputExample(guid=guid, text_a=text_a, 
                                                  text_b=text_b, label=str(0)))
@@ -527,8 +527,8 @@ class TreccarProcessor(DataProcessor):
                             continue
                         guid = "%s-%s-%s-%s-%s-%s" % ("online", qid, doc_ind_b, 
                                                       doc_b.docid, doc_ind_c, doc_c.docid)
-                        text_b = convert_to_unicode(doc_b.content)
-                        text_c = convert_to_unicode(doc_c.content)
+                        text_b = convert_to_unicode(doc_b.raw)
+                        text_c = convert_to_unicode(doc_c.raw)
                         docid_dict[doc_b.docid] = text_b
                         # Note that len_gt_titles needs to be populated with a random 
                         # numbert as it vital to properly functioning in TREC-CAR
@@ -539,7 +539,7 @@ class TreccarProcessor(DataProcessor):
             else:
                 for doc_ind, doc in enumerate(data[qid]):
                     guid = "%s-%s-%s-%s" % ("online", qid, doc_ind, doc.docid)
-                    text_b = convert_to_unicode(doc.content)
+                    text_b = convert_to_unicode(doc.raw)
                     docid_dict[doc.docid] = text_b
                     examples.append(InputExample(guid=guid, text_a=text_a, 
                                                  text_b=text_b, label=str(0), 
@@ -622,8 +622,7 @@ def convert_examples_to_features(examples, tokenizer,
                                  use_tfrecord = False,
                                  writer = None,
                                  is_duoBERT = False,
-                                 is_tokenizers = False,
-                                 is_encode_batch = False
+                                 is_encode_batch = False #TODO many don't have encode_batch
                                  ):
     """
     Loads a data file into a list of ``InputFeatures``
@@ -667,85 +666,63 @@ def convert_examples_to_features(examples, tokenizer,
     guid_list = []
     batch_size = 10000
     for (ex_index, example) in enumerate(examples):
-        if ex_index % batch_size == 0:
+        if ex_index % batch_size == 0 and is_encode_batch:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-            if is_encode_batch:
-                batch_tokens_a = list(map(lambda bta: bta.ids, tokenizer.encode_batch(list(
-                    map(lambda ex: ex.text_a, examples[ex_index:ex_index + batch_size])))))
-                batch_tokens_b = list(map(lambda btb: btb.ids[1:], tokenizer.encode_batch(list(
-                    map(lambda ex: ex.text_b, examples[ex_index:ex_index + batch_size])))))
-                if is_duoBERT:
-                    batch_tokens_c = list(map(lambda btc: btc.ids[1:], tokenizer.encode_batch(list(
-                        map(lambda ex: ex.text_c, examples[ex_index:ex_index + batch_size])))))
+            batch_tokens_a = list(map(lambda bta: bta.ids, tokenizer.encode_batch(list(
+                map(lambda ex: ex.text_a, examples[ex_index:ex_index + batch_size])))))
+            batch_tokens_b = list(map(lambda btb: btb.ids[1:], tokenizer.encode_batch(list(
+                map(lambda ex: ex.text_b, examples[ex_index:ex_index + batch_size])))))
+            if is_duoBERT:
+                batch_tokens_c = list(map(lambda btc: btc.ids[1:], tokenizer.encode_batch(list(
+                    map(lambda ex: ex.text_c, examples[ex_index:ex_index + batch_size])))))
         if is_tf_dataset:
             example = processor.get_example_from_tensor_dict(example)
+
         if is_encode_batch:
             tokens_a = batch_tokens_a[ex_index%batch_size]
             tokens_b = batch_tokens_b[ex_index%batch_size]
-        elif is_tokenizers:
-            tokens_a = tokenizer.encode(example.text_a).ids
-            tokens_b = tokenizer.encode(example.text_b).ids[1:]
         else:
-            tokens_a = tokenizer.tokenize(example.text_a)
-            tokens_b = tokenizer.tokenize(example.text_b)
-        tokens = tokens_a[:max_len_A - int(sep_token_extra) - 2*int(not is_tokenizers)] # cls,sep not included if not tokenizers
-        if is_tokenizers:
-            tokens[-1] = 102 # force last token to be sep in tokenizers
-        else:
-            tokens += [sep_token]
+            tokens_a = tokenizer.encode(example.text_a)
+            tokens_b = tokenizer.encode(example.text_b)[1:]
+        tokens = tokens_a[:max_len_A - int(sep_token_extra)] # cls,sep not included if not tokenizers
+        tokens[-1] = tokenizer.sep_token_id
         if sep_token_extra:
             # roberta uses an extra separator b/w pairs of sentences
             tokens += [sep_token]
-        segment_ids = ([cls_token_segment_id] * (int(is_tokenizers))) + \
-                                 ([sequence_a_segment_id] * (len(tokens) - int(is_tokenizers)))
+        segment_ids = ([cls_token_segment_id]) + \
+                                 ([sequence_a_segment_id] * (len(tokens) - 1))
         if is_duoBERT:
             if is_encode_batch:
                 tokens_c = batch_tokens_c[ex_index%batch_size]
             else:
-                tokens_c = tokenizer.encode(example.text_c).ids[1:] if is_tokenizers else tokenizer.tokenize(example.text_c)
+                tokens_c = tokenizer.encode(example.text_c)[1:]
 
-            # - (not is_tokenizers) because cls and sep token missing in transformers
-            max_len_b_c = (((max_length - int(not is_tokenizers)) - len(tokens)) // 2) - int(not is_tokenizers) 
+            max_len_b_c = (max_length - len(tokens)) // 2
             if tokens_b:
                 tokens += tokens_b[:max_len_b_c - int(sep_token_extra)]
-                if is_tokenizers:
-                    tokens[-1] = 102
-                else:
-                    tokens += [sep_token]
+                tokens[-1] = tokenizer.sep_token_id
                 if sep_token_extra:
-                    tokens += [sep_token]
+                    tokens += [tokenizer.sep_token_id]
                 segment_ids += [sequence_b_segment_id] * (len(tokens) - len(segment_ids))
             if tokens_c:
                 tokens += tokens_c[:max_len_b_c - int(sep_token_extra)]
-                if is_tokenizers:
-                    tokens[-1] = 102
-                else:
-                    tokens += [sep_token]
+                tokens[-1] = tokenizer.sep_token_id
                 if sep_token_extra:
-                    tokens += [sep_token]
+                    tokens += [tokenizer.sep_token_id]
                 segment_ids += [sequence_c_segment_id] * (len(tokens) - len(segment_ids))
         else:
             if tokens_b:
-                tokens += tokens_b[:max_length - 2*int(not is_tokenizers) - len(tokens) - int(sep_token_extra)] 
-                if is_tokenizers:
-                    tokens[-1] = 102
-                else:
-                    tokens += [sep_token]
+                tokens += tokens_b[:max_length - len(tokens) - int(sep_token_extra)] 
+                tokens[-1] = tokenizer.sep_token_id
                 if sep_token_extra:
-                    tokens += [sep_token]
+                    tokens += [tokenizer.sep_token_id]
                 segment_ids += [sequence_b_segment_id] * (len(tokens) - len(segment_ids))
 
-        if cls_token_at_end:
-            tokens = tokens + [cls_token]
-            segment_ids = segment_ids + [cls_token_segment_id]
-        elif not is_tokenizers:
-            tokens = [cls_token] + tokens
-            segment_ids = [cls_token_segment_id] + segment_ids
+        if cls_token_at_end: #TODO check if taken care by tokenizers
+            tokens = tokens[1:] + [tokenizer.cls_token_id]
+            segment_ids = segment_ids[1:] + [cls_token_segment_id]
 
-        if is_tokenizers:
-            input_ids = tokens
-        else:
-            input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_ids = tokens
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
@@ -900,5 +877,4 @@ GLUE_TASKS_NUM_LABELS = {
     "msmarco": 2,
     "treccar": 2
 }
-
 

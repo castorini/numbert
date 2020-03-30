@@ -3,53 +3,30 @@ import torch
 from torch.utils.data import (DataLoader, SequentialSampler,
                               TensorDataset)
 
-from transformers import (BertConfig,
-                          BertForSequenceClassification, BertTokenizer,
-                          RobertaConfig,
-                          RobertaForSequenceClassification,
-                          RobertaTokenizer,
-                          XLMConfig, XLMForSequenceClassification,
-                          XLMTokenizer, XLNetConfig,
-                          XLNetForSequenceClassification,
-                          XLNetTokenizer,
-                          DistilBertConfig,
-                          DistilBertForSequenceClassification,
-                          DistilBertTokenizer)
+from transformers import (AutoConfig, AutoTokenizer,
+                          AutoModelForSequenceClassification,
+                          MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING)
+
+MODEL_CONFIG_CLASSES = list(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING.keys())
+MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) \
+                  for conf in MODEL_CONFIG_CLASSES), (),)
+
 from tqdm import tqdm
 import numpy as np
 import re
-import os
-
-from tokenizers import BertWordPieceTokenizer
 
 logger = logging.getLogger(__name__)
 
-ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) \
-    for conf in (BertConfig, XLNetConfig, XLMConfig, RobertaConfig, \
-        DistilBertConfig)), ())
-
-MODEL_CLASSES = {'bert': (BertConfig, BertForSequenceClassification, 
-                          BertWordPieceTokenizer),
-    'xlnet': (XLNetConfig, XLNetForSequenceClassification, XLNetTokenizer),
-    'xlm': (XLMConfig, XLMForSequenceClassification, XLMTokenizer),
-    'roberta': (RobertaConfig, RobertaForSequenceClassification, 
-                RobertaTokenizer),
-    'distilbert': (DistilBertConfig, DistilBertForSequenceClassification, 
-                   DistilBertTokenizer)}
-
 def load_model(model_dir, model_type = "bert", do_lower_case = True, 
                task_name = "msmarco", no_cuda = False):
-    config_class, model_class, tokenizer_class = MODEL_CLASSES[model_type]
-    config = config_class.from_pretrained(model_dir, num_labels = 2, 
-                                          finetuning_task = task_name)
-    if model_type == "bert":
-        tokenizer = tokenizer_class(os.path.join(model_dir, "vocab.txt"), 
-                                    lowercase=True)
-    else:
-        tokenizer = tokenizer_class.from_pretrained(
-            model_dir, do_lower_case=do_lower_case)
-    model = model_class.from_pretrained(
-        model_dir, from_tf=bool('.ckpt' in model_dir), config = config)
+    config = AutoConfig.from_pretrained(model_dir, num_labels=2,
+                                        finetuning_task=task_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+      model_dir, do_lower_case=do_lower_case, use_fast=True)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_dir, from_tf=bool(".ckpt" in model_dir),config=config)
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not no_cuda else "cpu")
     model.to(device)
@@ -131,7 +108,7 @@ def online_eval(model, tokenizer, device, features, batch_size = 1,
     return numbert_predictions
 
 class Hit:
-    def __init__(self, docid, content, score):
+    def __init__(self, docid, raw, score):
         self.docid = docid
-        self.content = content
+        self.raw = raw
         self.score = score

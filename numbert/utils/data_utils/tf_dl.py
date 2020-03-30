@@ -21,7 +21,7 @@ import tensorflow as tf
 import torch
 
 class TFRecordDataLoader(object):
-    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco"):
+    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco", in_batch_negative=False):
         tf.random.set_seed(seed)
         if isinstance(records, str):
             records  = [records]
@@ -42,7 +42,7 @@ class TFRecordDataLoader(object):
 
 
         #Instantiate dataset according to original BERT implementation
-        if train:
+        if train and (not in_batch_negative):
             self.dataset = tf.data.Dataset.from_tensor_slices(tf.constant(records))
             self.dataset = self.dataset.shuffle(buffer_size=len(records))
 
