@@ -255,10 +255,9 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                     logs["learning_rate"] = learning_rate_scalar
                     logs["loss"] = loss_scalar
                     logging_loss = tr_loss
-
                     for key, value in logs.items():
                         tb_writer.add_scalar(key, value, global_step)
-                    print(json.dumps({**logs, **{"step": global_step}}))
+                    print({"step": global_step})
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -430,7 +429,7 @@ def evaluate(args, model, tokenizer, prefix=""):
         output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
 
         if args.trec_output:
-            split = "test" if args.test else "dev"
+            split = "test" if args.do_test else "dev"
             output_treccar_file = os.path.join(eval_output_dir, "treccar_predictions_" + split + ".tsv")
 
             with open(output_treccar_file, "w") as f_trec:
@@ -441,7 +440,7 @@ def evaluate(args, model, tokenizer, prefix=""):
                         rank += 1
 
         if args.msmarco_output:
-            split = "eval" if args.test else "dev"
+            split = "eval" if args.do_test else "dev"
             output_msmarco_file = os.path.join(eval_output_dir, "msmarco_predictions_" + split + ".tsv")
             with open(output_msmarco_file, "w") as f_msmarco:
                 for query_id in numbert_predictions:
@@ -471,7 +470,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
     global original_query_list
 
     split = 'dev' if evaluate else 'train'
-    if args.test:
+    if args.do_test:
         split = 'eval'
     dataset = os.path.join(args.data_dir, 'dataset_{}.tf'.format(split))
 
@@ -506,7 +505,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         if task in ['msmarco','treccar'] and evaluate: # ignore for train_triples
             logger.info("Loading Collection")
             processor.load_collection(args.data_dir)
-        if args.test:
+        if args.do_test:
             examples = processor.get_test_examples(args.data_dir, is_duoBERT = args.is_duoBERT)
         else:
             examples = processor.get_dev_examples(args.data_dir, is_duoBERT = args.is_duoBERT) if evaluate else processor.get_train_examples(args.data_dir, is_duoBERT = args.is_duoBERT)
@@ -528,7 +527,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 use_tfrecord = args.use_tfrecord,
                                                 writer = writer,
                                                 task = args.task_name,
-                                                is_duoBERT = args.is_duoBERT)
+                                                is_duoBERT = args.is_duoBERT,
+                                                is_encode_batch = args.encode_batch)
         if args.use_tfrecord:
             guid_list = features
         if args.local_rank in [-1, 0]:
@@ -635,17 +635,18 @@ def main():
     )
     parser.add_argument("--do_train", action="store_true", help="Whether to run training.")
     parser.add_argument("--do_eval", action="store_true", help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_test", action="store_true", help="Whether to run eval on the test set.")
     parser.add_argument(
         "--evaluate_during_training", action="store_true", help="Run evaluation during training at each logging step.",
     )
     parser.add_argument(
         "--do_lower_case", action="store_true", help="Set this flag if you are using an uncased model.",
     )
-    parser.add_argument("--encode_batch", action='store_true',
-                        help="Set this flag if you are using an fast tokenizers' batch encoding.")
     parser.add_argument("--in_batch_negative", action='store_true',
                         help="Whether to sample sequentially so as to maintain both"
                              "positive and negative example in batch (even total batch size required).")
+    parser.add_argument("--encode_batch", action='store_true',
+                        help="Set this flag if you are using batch encoding.")
 
     parser.add_argument(
         "--per_gpu_train_batch_size", default=8, type=int, help="Batch size per GPU/CPU for training.",
@@ -681,13 +682,10 @@ def main():
         action="store_true",
         help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number",
     )
+    parser.add_argument("--msmarco_output", action="store_true", help="Return msmarco output")
+    parser.add_argument("--trec_output", action="store_true", help="Return trec output")
     parser.add_argument('--print_loss_steps', type=int, default=50,
                         help="Print loss every X updates steps.")
-    parser.add_argument(
-        "--eval_all_checkpoints",
-        action="store_true",
-        help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number",
-    )
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
     parser.add_argument(
         "--overwrite_output_dir", action="store_true", help="Overwrite the content of the output directory",

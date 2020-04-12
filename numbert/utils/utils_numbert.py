@@ -622,7 +622,7 @@ def convert_examples_to_features(examples, tokenizer,
                                  use_tfrecord = False,
                                  writer = None,
                                  is_duoBERT = False,
-                                 is_encode_batch = False #TODO many don't have encode_batch
+                                 is_encode_batch = False
                                  ):
     """
     Loads a data file into a list of ``InputFeatures``
@@ -666,15 +666,16 @@ def convert_examples_to_features(examples, tokenizer,
     guid_list = []
     batch_size = 10000
     for (ex_index, example) in enumerate(examples):
-        if ex_index % batch_size == 0 and is_encode_batch:
+        if ex_index % batch_size == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-            batch_tokens_a = list(map(lambda bta: bta.ids, tokenizer.encode_batch(list(
-                map(lambda ex: ex.text_a, examples[ex_index:ex_index + batch_size])))))
-            batch_tokens_b = list(map(lambda btb: btb.ids[1:], tokenizer.encode_batch(list(
-                map(lambda ex: ex.text_b, examples[ex_index:ex_index + batch_size])))))
-            if is_duoBERT:
-                batch_tokens_c = list(map(lambda btc: btc.ids[1:], tokenizer.encode_batch(list(
-                    map(lambda ex: ex.text_c, examples[ex_index:ex_index + batch_size])))))
+            if is_encode_batch:
+                batch_tokens_a = list(map(lambda bta: bta.ids, tokenizer.encode_batch(list(
+                    map(lambda ex: ex.text_a, examples[ex_index:ex_index + batch_size])))))
+                batch_tokens_b = list(map(lambda btb: btb.ids[1:], tokenizer.encode_batch(list(
+                    map(lambda ex: ex.text_b, examples[ex_index:ex_index + batch_size])))))
+                if is_duoBERT:
+                    batch_tokens_c = list(map(lambda btc: btc.ids[1:], tokenizer.encode_batch(list(
+                        map(lambda ex: ex.text_c, examples[ex_index:ex_index + batch_size])))))
         if is_tf_dataset:
             example = processor.get_example_from_tensor_dict(example)
 
