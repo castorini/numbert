@@ -28,10 +28,14 @@ from typing import Optional
 import numpy as np
 import re
 import torch
-import tensorflow as tf
+import torch_xla.core.xla_model as xm
+import torch_xla.debug.metrics as met
+import torch_xla.distributed.parallel_loader as pl
+import torch_xla.distributed.xla_multiprocessing as xmp
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
+import tensorflow as tf
 
 from transformers import (
     MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
@@ -74,16 +78,22 @@ def set_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if args.n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
+
+
+def get_sampler(dataset):
+    if xm.xrt_world_size() <= 1:
+        return RandomSampler(dataset)
+    return DistributedSampler(dataset, num_replicas=xm.xrt_world_size(), rank=xm.get_ordinal())
+
 
 
 def train(args, train_dataset, model, tokenizer, train_guid = None):
     """ Train the model """
-    if args.local_rank in [-1, 0]:
-        tb_writer = SummaryWriter()
+    if xm.is_master_ordinal():
+        # Only master writes to Tensorboard
+        tb_writer = SummaryWriter(args.tensorboard_logdir)
 
-    args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
+    args.train_batch_size = args.per_gpu_train_batch_size * max(1, xm.xrt_world_size())
     if args.use_tfrecord:
         data_set_args = {'batch_size': args.train_batch_size if args.local_rank == -1 \
                                         else args.per_gpu_train_batch_size, # todo check if words for distributed
@@ -164,7 +174,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
         "  Total train batch size (w. parallel, distributed & accumulation) = %d",
         args.train_batch_size
         * args.gradient_accumulation_steps
-        * (torch.distributed.get_world_size() if args.local_rank != -1 else 1),
+        * xm.xrt_world_size()
     )
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
@@ -187,15 +197,16 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
         logger.info("  Continuing training from global step %d", global_step)
         logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
 
-    tr_loss, logging_loss, print_loss = 0.0, 0.0, 0.0
+    tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
 
     train_iterator = trange(
-        epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0],
+        epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=disable_logging,
     )
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for _ in train_iterator:
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        train_dataloader = pl.ParallelLoader(train_dataloader, [args.device]).per_device_loader(args.device)
+        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=disable_logging)
         for step, batch in enumerate(epoch_iterator):
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
@@ -250,67 +261,71 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                 else:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
-                optimizer.step()
+                xm.optimizer_step(optimizer)
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     logs = {}
-                    if (
-                        args.local_rank == -1 and args.evaluate_during_training
-                    ):  # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
+                    if args.evaluate_during_training:
+                        results = evaluate(args, model, tokenizer, disable_logging=disable_logging)
                         for key, value in results.items():
                             eval_key = "eval_{}".format(key)
                             logs[eval_key] = value
+                    if xm.is_master_ordinal():
+                        loss_scalar = (tr_loss - logging_loss) / args.logging_steps
+                        learning_rate_scalar = scheduler.get_lr()[0]
+                        logs["learning_rate"] = learning_rate_scalar
+                        logs["loss"] = loss_scalar
+                        logging_loss = tr_loss
+                        for key, value in logs.items():
+                            tb_writer.add_scalar(key, value, global_step)
+                        print({"step": global_step})
 
-                    loss_scalar = (tr_loss - logging_loss) / args.logging_steps
-                    learning_rate_scalar = scheduler.get_lr()[0]
-                    logs["learning_rate"] = learning_rate_scalar
-                    logs["loss"] = loss_scalar
-                    logging_loss = tr_loss
-                    for key, value in logs.items():
-                        tb_writer.add_scalar(key, value, global_step)
-                    print({"step": global_step})
-
-                if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
+                if args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
                     output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
-                    if not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
+                    if xm.is_master_ordinal():
+                        if not os.path.exists(output_dir):
+                            os.makedirs(output_dir)
+                        torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                    
+                    # Barrier to wait for saving checkpoint.
+                    xm.rendezvous("mid_training_checkpoint")
                     model_to_save = (
                         model.module if hasattr(model, "module") else model
                     )  # Take care of distributed/parallel training
                     model_to_save.save_pretrained(output_dir)
                     tokenizer.save_pretrained(output_dir)
 
-                    torch.save(args, os.path.join(output_dir, "training_args.bin"))
                     logger.info("Saving model checkpoint to %s", output_dir)
 
                     torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
                     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.print_loss_steps == 0:
-                    logging.info("Loss: %f", (tr_loss - print_loss)/args.print_loss_steps)
-                    print_loss = tr_loss
-
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
+        if args.metrics_debug:
+            # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
+            xm.master_print(met.metrics_report())
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
 
-    if args.local_rank in [-1, 0]:
+    if xm.is_master_ordinal():
         tb_writer.close()
+    return global_step, loss.item()
 
-    return global_step, tr_loss / global_step
 
+def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
+    """Evaluate the model"""
+    if xm.is_master_ordinal():
+        # Only master writes to Tensorboard
+        tb_writer = SummaryWriter(args.tensorboard_logdir)
 
-def evaluate(args, model, tokenizer, prefix=""):
-    # Passage Ranking Evaluation
     log_softmax = torch.nn.LogSoftmax()
     eval_task_names = (args.task_name,)
     eval_outputs_dirs = (args.output_dir,)
@@ -343,6 +358,7 @@ def evaluate(args, model, tokenizer, prefix=""):
         else:
             eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
             eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        eval_dataloader = pl.ParallelLoader(eval_dataloader, [args.device]).per_device_loader(args.device)
 
         # Eval!
         logger.info("***** Running evaluation {} *****".format(prefix))
@@ -355,8 +371,9 @@ def evaluate(args, model, tokenizer, prefix=""):
         nb_eval_steps = 0
         preds = None
         out_label_ids = None
-        for batch in tqdm(eval_dataloader, desc="Evaluating"):
+        for batch in tqdm(eval_dataloader, desc="Evaluating", disable=disable_logging):
             model.eval()
+
             if args.use_tfrecord:
                 batch = {k: v.to(args.device) for k,v in batch.items()}
             else:
@@ -386,16 +403,23 @@ def evaluate(args, model, tokenizer, prefix=""):
             log_logits = log_softmax(logits)
             if preds is None:
                 preds = log_logits.detach().cpu().numpy()
-                lguids = list(map(lambda x: tuple(re.split(r'-',eval_guid[x])) , batch_guids.detach().cpu()))
+                lguids = np.array(list(map(lambda x: tuple(re.split(r'-',eval_guid[x])), 
+                                           batch_guids.detach().cpu())))
                 if args.task_name == "treccar":
                     llen_gt_titles = batch_len_gt_titles.detach().cpu().numpy()
                 out_label_ids = inputs['labels'].detach().cpu().numpy()
             else:
                 preds = np.append(preds, log_logits.detach().cpu().numpy(), axis=0)
-                lguids += list(map(lambda x: tuple(re.split(r'-',eval_guid[x])) , batch_guids.detach().cpu()))
+                lguids = np.append(lguids, np.array(list(map(lambda x: tuple(re.split(r'-',eval_guid[x])), 
+                                                             batch_guids.detach().cpu()))), axis=0)
                 if args.task_name == "treccar":
                     llen_gt_titles = np.append(llen_gt_titles, batch_len_gt_titles.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
+
+        # tpu-comment: Get all predictions and labels from all worker shards of eval dataset
+        preds = xm.mesh_reduce("eval_preds", preds, np.concatenate)
+        out_label_ids = xm.mesh_reduce("eval_out_label_ids", out_label_ids, np.concatenate)
+        lguids = list(xm.mesh_reduce("eval_lguids", lguids, np.concatenate))
 
         numbert_predictions = {}
         numbert_labels = {}
@@ -439,42 +463,50 @@ def evaluate(args, model, tokenizer, prefix=""):
         eval_loss = eval_loss / nb_eval_steps
         result = compute_metrics(eval_task, numbert_predictions_no_score, numbert_labels)
         results.update(result)
+        if xm.is_master_ordinal():
+            output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
 
-        output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
+            if args.trec_output:
+                split = "test" if args.do_test else "dev"
+                output_treccar_file = os.path.join(eval_output_dir, "treccar_predictions_" + split + ".tsv")
 
-        if args.trec_output:
-            split = "test" if args.do_test else "dev"
-            output_treccar_file = os.path.join(eval_output_dir, "treccar_predictions_" + split + ".tsv")
+                with open(output_treccar_file, "w") as f_trec:
+                    for query_id in numbert_predictions:
+                        rank = 1
+                        for doc_id, score in numbert_predictions[query_id]:
+                            f_trec.write(" ".join((ORIGINAL_QUERIES[int(query_id)], "Q0", doc_id, str(rank), str(score), "BERT")) + "\n")
+                            rank += 1
 
-            with open(output_treccar_file, "w") as f_trec:
-                for query_id in numbert_predictions:
-                    rank = 1
-                    for doc_id, score in numbert_predictions[query_id]:
-                        f_trec.write(" ".join((ORIGINAL_QUERIES[int(query_id)], "Q0", doc_id, str(rank), str(score), "BERT")) + "\n")
-                        rank += 1
+            if args.msmarco_output:
+                split = "eval" if args.do_test else "dev"
+                output_msmarco_file = os.path.join(eval_output_dir, "msmarco_predictions_" + split + ".tsv")
+                with open(output_msmarco_file, "w") as f_msmarco:
+                    for query_id in numbert_predictions:
+                        rank = 1
+                        for doc_id, _ in numbert_predictions[query_id]:
+                            f_msmarco.write("\t".join((query_id, doc_id, str(rank))) + "\n")
+                            rank += 1
 
-        if args.msmarco_output:
-            split = "eval" if args.do_test else "dev"
-            output_msmarco_file = os.path.join(eval_output_dir, "msmarco_predictions_" + split + ".tsv")
-            with open(output_msmarco_file, "w") as f_msmarco:
-                for query_id in numbert_predictions:
-                    rank = 1
-                    for doc_id, _ in numbert_predictions[query_id]:
-                        f_msmarco.write("\t".join((query_id, doc_id, str(rank))) + "\n")
-                        rank += 1
+            with open(output_eval_file, "w") as writer:
+                logger.info("***** Eval results {} *****".format(prefix))
+                for key in sorted(result.keys()):
+                    logger.info("  %s = %s", key, str(result[key]))
+                    writer.write("%s = %s\n" % (key, str(result[key])))
+                    tb_writer.add_scalar(f"{eval_task}/{key}", results[key])
 
-        with open(output_eval_file, "w") as writer:
-            logger.info("***** Eval results {} *****".format(prefix))
-            for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
+    if args.metrics_debug:
+        # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
+        xm.master_print(met.metrics_report())
+
+    if xm.is_master_ordinal():
+        tb_writer.close()
 
     return results
 
 
 def load_and_cache_examples(args, task, tokenizer, evaluate=False):
-    if args.local_rank not in [-1, 0] and not evaluate:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
+    if not xm.is_master_ordinal():
+        xm.rendezvous("load_and_cache_examples")
 
     processor = processors[task]()
     output_mode = output_modes[task]
@@ -557,8 +589,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                 with open(cached_oq_map_file, "wb") as fp:
                     pickle.dump(ORIGINAL_QUERIES, fp)
 
-    if args.local_rank == 0 and not evaluate:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
+    if xm.is_master_ordinal():
+        xm.rendezvous("load_and_cache_examples")
 
     if args.use_tfrecord:
         return dataset, guid_list
@@ -581,13 +613,6 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
 
 
 def main():
-    parser = HfArgumentParser((ModelArguments, DataProcessingArguments, TrainingArguments))
-    model_args, dataprocessing_args, training_args = parser.parse_args_into_dataclasses()
-
-    # For now, let's merge all the sets of args into one,
-    # but soon, we'll keep distinct sets of args, with a cleaner separation of concerns.
-    args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
-
     if (
         os.path.exists(args.output_dir)
         and os.listdir(args.output_dir)
@@ -598,34 +623,24 @@ def main():
             f"Output directory ({args.output_dir}) already exists and is not empty. Use --overwrite_output_dir to overcome."
         )
 
-    # Setup CUDA, GPU & distributed training
-    if args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
-    else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend="nccl")
-        args.n_gpu = 1
-    args.device = device
+    # tpu-comment: Get TPU/XLA Device
+    args.device = xm.xla_device()
 
     # Setup logging
     logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        format="[xla:{}] %(asctime)s - %(levelname)s - %(name)s -   %(message)s".format(xm.get_ordinal()),
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
+        level=logging.INFO,
     )
-    logger.warning(
-        "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
-        args.local_rank,
-        device,
-        args.n_gpu,
-        bool(args.local_rank != -1),
-        args.fp16,
-    )
+    disable_logging = False
+    if not xm.is_master_ordinal() and args.only_log_master:
+        # Disable all non-master loggers below CRITICAL.
+        logging.disable(logging.CRITICAL)
+        disable_logging = True
+    logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
 
-    # Set seed
-    set_seed(args)
+    # Set seed to have same initialization
+    set_seed(args.seed)
 
     # Prepare Ranking task
     args.task_name = args.task_name.lower()
@@ -635,6 +650,11 @@ def main():
     args.output_mode = output_modes[args.task_name]
     label_list = processor.get_labels()
     num_labels = len(label_list)
+
+    if not xm.is_master_ordinal():
+        xm.rendezvous(
+            "download_only_once"
+        )  # Make sure only the first process in distributed training will download model & vocab
 
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
@@ -658,8 +678,13 @@ def main():
         cache_dir=args.cache_dir,
     )
 
-    if args.local_rank == 0:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
+    if xm.is_master_ordinal():
+            # Save trained model.
+            # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
+
+            # Create output directory if needed
+            if not os.path.exists(args.output_dir):
+                os.makedirs(args.output_dir)
 
     model.to(args.device)
 
@@ -669,28 +694,29 @@ def main():
     # Training
     if args.do_train:
         train_dataset, train_guid = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
-        global_step, tr_loss = train(args, train_dataset, model, tokenizer, train_guid)
+        global_step, tr_loss = train(args, train_dataset, model, tokenizer, train_guid, disable_logging=disable_logging)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
+        if xm.is_master_ordinal():
+            # Save trained model.
+            # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
 
-    # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-        # Create output directory if needed
-        if not os.path.exists(args.output_dir) and args.local_rank in [-1, 0]:
-            os.makedirs(args.output_dir)
+            # Create output directory if needed
+            if not os.path.exists(args.output_dir):
+                os.makedirs(args.output_dir)
 
-        logger.info("Saving model checkpoint to %s", args.output_dir)
+            logger.info("Saving model checkpoint to %s", args.output_dir)
+            tokenizer.save_pretrained(args.output_dir)
+
+            # Good practice: save your training arguments together with the trained model
+            torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
+        xm.rendezvous("post_training_checkpoint")
         # Save a trained model, configuration and tokenizer using `save_pretrained()`.
         # They can then be reloaded using `from_pretrained()`
         model_to_save = (
             model.module if hasattr(model, "module") else model
         )  # Take care of distributed/parallel training
         model_to_save.save_pretrained(args.output_dir)
-        tokenizer.save_pretrained(args.output_dir)
-
-        # Good practice: save your training arguments together with the trained model
-        torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
-
         # Load a trained model and vocabulary that you have fine-tuned
         model = AutoModelForSequenceClassification.from_pretrained(args.output_dir)
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
@@ -713,12 +739,29 @@ def main():
 
             model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
             model.to(args.device)
-            result = evaluate(args, model, tokenizer, prefix=prefix)
+            result = evaluate(args, model, tokenizer, prefix=prefix, disable_logging=disable_logging)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
             results.update(result)
 
     return results
 
+def get_args():
+    parser = HfArgumentParser((ModelArguments, DataProcessingArguments, TrainingArguments))
+    model_args, dataprocessing_args, training_args = parser.parse_args_into_dataclasses()
+
+    # For now, let's merge all the sets of args into one,
+    # but soon, we'll keep distinct sets of args, with a cleaner separation of concerns.
+    args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
+    return args
+
+def _mp_fn(rank, args):
+    main(args)
+
+
+def main_cli():
+    args = get_args()
+    xmp.spawn(_mp_fn, args=(args,), nprocs=args.num_cores)
+
 
 if __name__ == "__main__":
-    main()
+    main_cli()

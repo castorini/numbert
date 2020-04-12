@@ -7,7 +7,7 @@ class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
     """
-    
+
     model_name_or_path: str = field(
         metadata={"help": "Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS)}
     )
@@ -63,3 +63,6 @@ class TrainingArguments(TrainingArguments):
     msmarco_output: bool = field(default=False, metadata={"help": "Return MSMARCO output"})
     trec_output: bool = field(default=False, metadata={"help": "Return TREC output"})
     print_loss_steps: int = field(default=50, metadata={"help": "Print loss every X updates steps."})
+    num_cores: int = field(default=8, metadata={"help": "Number of TPU cores to use (1 or 8)."})
+    metrics_debug: bool = field(default=False, metadata="Whether to print debug metrics.")
+    only_log_master: bool = field(default=False, metadata={"help": "Only log master"})
