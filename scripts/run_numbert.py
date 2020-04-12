@@ -22,30 +22,44 @@ import json
 import logging
 import os
 import random
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 import re
 import torch
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
-                              TensorDataset)
+import tensorflow as tf
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm, trange
+
+from transformers import (
+    MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
+    WEIGHTS_NAME,
+    AdamW,
+    AutoConfig,
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    HfArgumentParser,
+    get_linear_schedule_with_warmup,
+)
+
+from numbert.utils import ModelArguments, DataProcessingArguments, TrainingArguments
+from numbert.utils.utils_numbert import (
+    compute_metrics,
+    convert_examples_to_features,
+    output_modes, 
+    processors,
+)  
+
+from numbert.utils.data_utils import tf_dl 
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
 except:
     from tensorboardX import SummaryWriter
 
-from tqdm import tqdm, trange
-
-from transformers import (
-    WEIGHTS_NAME, AdamW, AutoConfig, MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
-    AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup)
-
-from numbert.utils.utils_numbert import (compute_metrics, convert_examples_to_features,
-                        output_modes, processors)  
-from numbert.utils.data_utils import tf_dl 
-
-import tensorflow as tf
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +68,7 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) for conf in MODEL_CONFIG_CLASSES), (),)
 
-
-original_query_list = None # maintains list of original queries, which are used especially during TREC-CAR output
+ORIGINAL_QUERIES = None # maintains list of original queries, which are used especially during TREC-CAR output
 
 def set_seed(args):
     random.seed(args.seed)
@@ -177,7 +190,9 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
     tr_loss, logging_loss, print_loss = 0.0, 0.0, 0.0
     model.zero_grad()
 
-    train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
+    train_iterator = trange(
+        epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0],
+    )
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
@@ -436,7 +451,7 @@ def evaluate(args, model, tokenizer, prefix=""):
                 for query_id in numbert_predictions:
                     rank = 1
                     for doc_id, score in numbert_predictions[query_id]:
-                        f_trec.write(" ".join((original_query_list[int(query_id)], "Q0", doc_id, str(rank), str(score), "BERT")) + "\n")
+                        f_trec.write(" ".join((ORIGINAL_QUERIES[int(query_id)], "Q0", doc_id, str(rank), str(score), "BERT")) + "\n")
                         rank += 1
 
         if args.msmarco_output:
@@ -467,7 +482,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
     guid_list = []
     writer = None
     dataset = None
-    global original_query_list
+    global ORIGINAL_QUERIES
 
     split = 'dev' if evaluate else 'train'
     if args.do_test:
@@ -491,14 +506,14 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
             guid_list = pickle.load(fp)
         if args.task_name == "treccar":
             with open(cached_oq_map_file, "rb") as fp:
-                original_query_list = pickle.load(fp)
+                ORIGINAL_QUERIES = pickle.load(fp)
 
     elif args.use_tfrecord and os.path.exists(os.path.join(args.data_dir, 'dataset_{}.tf'.format(split))): #TODO caching
         with open(cached_guid_map_file, 'rb') as fp:
             guid_list = pickle.load(fp)
         if args.task_name == "treccar":
             with open(cached_oq_map_file, "rb") as fp:
-                original_query_list = pickle.load(fp)
+                ORIGINAL_QUERIES = pickle.load(fp)
     else:
         logger.info("Creating features from dataset file at %s", args.data_dir)
         label_list = processor.get_labels()
@@ -510,7 +525,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         else:
             examples = processor.get_dev_examples(args.data_dir, is_duoBERT = args.is_duoBERT) if evaluate else processor.get_train_examples(args.data_dir, is_duoBERT = args.is_duoBERT)
         if args.task_name == "treccar":
-            (examples, original_query_list) = examples
+            (examples, ORIGINAL_QUERIES) = examples
         if args.use_tfrecord:
             writer = tf.io.TFRecordWriter(dataset)
 
@@ -541,7 +556,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                 pickle.dump(guid_list, fp)
             if args.task_name == "treccar":
                 with open(cached_oq_map_file, "wb") as fp:
-                    pickle.dump(original_query_list, fp)
+                    pickle.dump(ORIGINAL_QUERIES, fp)
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
@@ -567,151 +582,12 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = HfArgumentParser((ModelArguments, DataProcessingArguments, TrainingArguments))
+    model_args, dataprocessing_args, training_args = parser.parse_args_into_dataclasses()
 
-    # Required parameters
-    parser.add_argument(
-        "--data_dir",
-        default=None,
-        type=str,
-        required=True,
-        help="The input data dir. Should contain the .tsv files (or other data files) for the task.",
-    )
-    parser.add_argument(
-        "--model_type",
-        default=None,
-        type=str,
-        required=True,
-        help="Model type selected in the list: " + ", ".join(MODEL_TYPES),
-    )
-    parser.add_argument(
-        "--model_name_or_path",
-        default=None,
-        type=str,
-        required=True,
-        help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS),
-    )
-    parser.add_argument(
-        "--task_name",
-        default=None,
-        type=str,
-        required=True,
-        help="The name of the task to train selected in the list: " + ", ".join(processors.keys()),
-    )
-    parser.add_argument(
-        "--output_dir",
-        default=None,
-        type=str,
-        required=True,
-        help="The output directory where the model predictions and checkpoints will be written.",
-    )
-    parser.add_argument("--use_tfrecord", action="store_true",
-                        help="Whether to use TFRecord")
-    parser.add_argument("--is_duoBERT", action="store_true",
-                        help="Whether to use duoBERT")
-
-    # Other parameters
-    parser.add_argument(
-        "--config_name", default="", type=str, help="Pretrained config name or path if not the same as model_name",
-    )
-    parser.add_argument(
-        "--tokenizer_name",
-        default="",
-        type=str,
-        help="Pretrained tokenizer name or path if not the same as model_name",
-    )
-    parser.add_argument(
-        "--cache_dir",
-        default="",
-        type=str,
-        help="Where do you want to store the pre-trained models downloaded from s3",
-    )
-    parser.add_argument(
-        "--max_seq_length",
-        default=512,
-        type=int,
-        help="The maximum total input sequence length after tokenization. Sequences longer "
-        "than this will be truncated, sequences shorter will be padded.",
-    )
-    parser.add_argument("--do_train", action="store_true", help="Whether to run training.")
-    parser.add_argument("--do_eval", action="store_true", help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_test", action="store_true", help="Whether to run eval on the test set.")
-    parser.add_argument(
-        "--evaluate_during_training", action="store_true", help="Run evaluation during training at each logging step.",
-    )
-    parser.add_argument(
-        "--do_lower_case", action="store_true", help="Set this flag if you are using an uncased model.",
-    )
-    parser.add_argument("--in_batch_negative", action='store_true',
-                        help="Whether to sample sequentially so as to maintain both"
-                             "positive and negative example in batch (even total batch size required).")
-    parser.add_argument("--encode_batch", action='store_true',
-                        help="Set this flag if you are using batch encoding.")
-
-    parser.add_argument(
-        "--per_gpu_train_batch_size", default=8, type=int, help="Batch size per GPU/CPU for training.",
-    )
-    parser.add_argument(
-        "--per_gpu_eval_batch_size", default=8, type=int, help="Batch size per GPU/CPU for evaluation.",
-    )
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        type=int,
-        default=1,
-        help="Number of updates steps to accumulate before performing a backward/update pass.",
-    )
-    parser.add_argument("--learning_rate", default=5e-5, type=float, help="The initial learning rate for Adam.")
-    parser.add_argument("--weight_decay", default=0.0, type=float, help="Weight decay if we apply some.")
-    parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="Epsilon for Adam optimizer.")
-    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
-    parser.add_argument(
-        "--num_train_epochs", default=3.0, type=float, help="Total number of training epochs to perform.",
-    )
-    parser.add_argument(
-        "--max_steps",
-        default=-1,
-        type=int,
-        help="If > 0: set total number of training steps to perform. Override num_train_epochs.",
-    )
-    parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
-
-    parser.add_argument("--logging_steps", type=int, default=500, help="Log every X updates steps.")
-    parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X updates steps.")
-    parser.add_argument(
-        "--eval_all_checkpoints",
-        action="store_true",
-        help="Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number",
-    )
-    parser.add_argument("--msmarco_output", action="store_true", help="Return msmarco output")
-    parser.add_argument("--trec_output", action="store_true", help="Return trec output")
-    parser.add_argument('--print_loss_steps', type=int, default=50,
-                        help="Print loss every X updates steps.")
-    parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
-    parser.add_argument(
-        "--overwrite_output_dir", action="store_true", help="Overwrite the content of the output directory",
-    )
-    parser.add_argument(
-        "--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets",
-    )
-    parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
-
-    parser.add_argument(
-        "--fp16",
-        action="store_true",
-        help="Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit",
-    )
-    parser.add_argument(
-        "--fp16_opt_level",
-        type=str,
-        default="O1",
-        help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
-        "See details at https://nvidia.github.io/apex/amp.html",
-    )
-    parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument("--server_ip", type=str, default="", help="For distant debugging.")
-    parser.add_argument("--server_port", type=str, default="", help="For distant debugging.")
-    parser.add_argument('--num_workers', type=int, default=2, help="Number of workers to use for dataloading")
-    args = parser.parse_args()
+    # For now, let's merge all the sets of args into one,
+    # but soon, we'll keep distinct sets of args, with a cleaner separation of concerns.
+    args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
 
     if (
         os.path.exists(args.output_dir)
@@ -720,18 +596,8 @@ def main():
         and not args.overwrite_output_dir
     ):
         raise ValueError(
-            "Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(
-                args.output_dir
-            )
+            f"Output directory ({args.output_dir}) already exists and is not empty. Use --overwrite_output_dir to overcome."
         )
-
-    # Setup distant debugging if needed
-    if args.server_ip and args.server_port:
-        # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
-        import ptvsd
-        print("Waiting for debugger attach")
-        ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
-        ptvsd.wait_for_attach()
 
     # Setup CUDA, GPU & distributed training
     if args.local_rank == -1 or args.no_cuda:
@@ -780,18 +646,17 @@ def main():
         args.config_name if args.config_name else args.model_name_or_path,
         num_labels=num_labels,
         finetuning_task=args.task_name,
-        cache_dir=args.cache_dir if args.cache_dir else None,
+        cache_dir=args.cache_dir,
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
-        do_lower_case=args.do_lower_case,
-        cache_dir=args.cache_dir if args.cache_dir else None, use_fast=True
+        args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir,
+        use_fast=True,
     )
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name_or_path,
         from_tf=bool(".ckpt" in args.model_name_or_path),
         config=config,
-        cache_dir=args.cache_dir if args.cache_dir else None,
+        cache_dir=args.cache_dir,
     )
 
     if args.local_rank == 0:
@@ -835,8 +700,7 @@ def main():
     # Evaluation
     results = {}
     if args.do_eval and args.local_rank in [-1, 0]:
-        tokenizer = AutoTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case,
-                                                  use_fast=True)
+        tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
             checkpoints = list(
