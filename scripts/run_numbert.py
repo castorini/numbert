@@ -57,7 +57,7 @@ from numbert.utils.data_utils import tf_dl
 
 try:
     from torch.utils.tensorboard import SummaryWriter
-except:
+except ImportError:
     from tensorboardX import SummaryWriter
 
 
