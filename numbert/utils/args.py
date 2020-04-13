@@ -51,6 +51,7 @@ class DataProcessingArguments:
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
+    
 
 @dataclass
 class TrainingArguments(TrainingArguments):
@@ -76,4 +77,5 @@ class TrainingArguments(TrainingArguments):
     num_cores: int = field(default=8, metadata={"help": "Number of TPU cores to use (1 or 8)."})
     metrics_debug: bool = field(default=False, metadata={"help":"Whether to print debug metrics."})
     only_log_master: bool = field(default=False, metadata={"help": "Only log master"})
+    num_workers: int = field(default=-1, metadata={"help": "Number of workers for sampling from TFRECORD"})
     tensorboard_logdir: str = field(default="./runs", metadata={"help": "Where to write tensorboard metrics."})

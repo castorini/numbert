@@ -93,7 +93,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                          'max_seq_len': args.max_seq_length,
                          'train': True,
                          'num_workers': max(args.num_workers, 1),
-                         'seed': args.seed + args.local_rank + 1,
+                         'seed': args.seed + xm.get_ordinal() + 1,
                          'threaded_dl': args.num_workers > 0,
                          'task': args.task_name,
                          'in_batch_negative': args.in_batch_negative
@@ -311,12 +311,8 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
         if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(eval_output_dir)
 
-        # multi-gpu training (should be after apex fp16 initialization)
-        if args.n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
-            model = torch.nn.DataParallel(model)
 
-
-        args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+        args.eval_batch_size = args.per_gpu_eval_batch_size
         # Note that DistributedSampler samples randomly
         if args.use_tfrecord:
             data_set_args = {'batch_size': args.eval_batch_size,
