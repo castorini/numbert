@@ -36,7 +36,7 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/castorini/numBERT",
     install_requires=["torch", 
-                      "tensorflow-cpu",
+                      "tensorflow-cpu==2.1.0",
                       "transformers",
                       "tokenizers",
                       "pyjnius", #1.2
