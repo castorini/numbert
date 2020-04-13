@@ -88,7 +88,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
         tb_writer = SummaryWriter(args.tensorboard_logdir)
 
     if args.use_tfrecord:
-        data_set_args = {'batch_size': args.train_batch_size, # todo check if words for distributed
+        data_set_args = {'batch_size': args.per_gpu_train_batch_size, # todo check if words for distributed
                          'max_seq_len': args.max_seq_length,
                          'train': True,
                          'num_workers': max(args.num_workers, 1),
@@ -104,7 +104,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
             train_sampler = SequentialSampler(train_dataset)
         else:
             train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)     
-        train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
+        train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.per_gpu_train_batch_size)
 
     # Redundant maybe but useful
     if args.use_tfrecord:
@@ -151,10 +151,10 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", train_per_epoch)
     logger.info("  Num Epochs = %d", args.num_train_epochs)
-    logger.info("  Instantaneous batch size per GPU = %d", args.train_batch_size)
+    logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
     logger.info(
         "  Total train batch size (w. parallel, distributed & accumulation) = %d",
-        args.train_batch_size
+        args.per_gpu_train_batch_size
         * args.gradient_accumulation_steps
         * xm.xrt_world_size()
     )
@@ -313,7 +313,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
 
         # Note that DistributedSampler samples randomly
         if args.use_tfrecord:
-            data_set_args = {'batch_size': args.eval_batch_size,
+            data_set_args = {'batch_size': args.per_gpu_eval_batch_size,
                              'max_seq_len': args.max_seq_length,
                              'train': False,
                              'num_workers': max(args.num_workers, 1),
@@ -325,7 +325,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
                                                        **data_set_args) #here eval dataset is just path to tf record file
         else:
             eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
-            eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+            eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
         eval_dataloader = pl.ParallelLoader(eval_dataloader, [args.device]).per_device_loader(args.device)
 
         # Eval!
@@ -334,7 +334,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
             logger.info("  Num examples = %d", len(eval_guid))
         else:
             logger.info("  Num examples = %d", len(eval_dataset))
-        logger.info("  Batch size = %d", args.eval_batch_size)
+        logger.info("  Batch size = %d", args.per_gpu_eval_batch_size)
         eval_loss = 0.0
         nb_eval_steps = 0
         preds = None
