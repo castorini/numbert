@@ -606,7 +606,7 @@ def main(args):
         logging.disable(logging.CRITICAL)
         disable_logging = True
     logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
-    logger.info("Process is using %s", xm.xla_real_devices([str(device)])[0])
+    logger.info("Process is using %s", xm.xla_real_devices([str(args.device)])[0])
     # Set seed to have same initialization
     set_seed(args) 
 
