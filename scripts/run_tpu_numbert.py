@@ -87,7 +87,6 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
         # Only master writes to Tensorboard
         tb_writer = SummaryWriter(args.tensorboard_logdir)
 
-    args.train_batch_size = args.per_gpu_train_batch_size
     if args.use_tfrecord:
         data_set_args = {'batch_size': args.train_batch_size, # todo check if words for distributed
                          'max_seq_len': args.max_seq_length,
@@ -152,7 +151,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", train_per_epoch)
     logger.info("  Num Epochs = %d", args.num_train_epochs)
-    logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
+    logger.info("  Instantaneous batch size per GPU = %d", args.train_batch_size)
     logger.info(
         "  Total train batch size (w. parallel, distributed & accumulation) = %d",
         args.train_batch_size
@@ -312,7 +311,6 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
             os.makedirs(eval_output_dir)
 
 
-        args.eval_batch_size = args.per_gpu_eval_batch_size
         # Note that DistributedSampler samples randomly
         if args.use_tfrecord:
             data_set_args = {'batch_size': args.eval_batch_size,
@@ -608,7 +606,7 @@ def main(args):
         logging.disable(logging.CRITICAL)
         disable_logging = True
     logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
-
+    logger.info("Process is using %s", xm.xla_real_devices([str(device)])[0])
     # Set seed to have same initialization
     set_seed(args) 
 
