@@ -22,8 +22,6 @@ import json
 import logging
 import os
 import random
-from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import re
@@ -38,7 +36,6 @@ from tqdm import tqdm, trange
 import tensorflow as tf
 
 from transformers import (
-    MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
     WEIGHTS_NAME,
     AdamW,
     AutoConfig,
@@ -48,7 +45,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-from numbert.utils import ModelArguments, DataProcessingArguments, TrainingArguments
+from numbert.utils.args import ModelArguments, DataProcessingArguments, TrainingArguments
 from numbert.utils.utils_numbert import (
     compute_metrics,
     convert_examples_to_features,
@@ -67,10 +64,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-MODEL_CONFIG_CLASSES = list(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING.keys())
-MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
-ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) for conf in MODEL_CONFIG_CLASSES), (),)
 
 ORIGINAL_QUERIES = None # maintains list of original queries, which are used especially during TREC-CAR output
 
