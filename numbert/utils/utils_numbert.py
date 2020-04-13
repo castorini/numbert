@@ -115,6 +115,7 @@ class InputFeatures(object):
         """Serializes this instance to a JSON string."""
         return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
 
+
 class DataProcessor(object):
     """Base class for data converters for sequence classification data sets."""
 
@@ -143,17 +144,6 @@ class DataProcessor(object):
         """Gets the list of labels for this data set."""
         raise NotImplementedError()
 
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a tab separated value file."""
-        with open(input_file, "r", encoding="utf-8-sig") as f:
-            reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                if sys.version_info[0] == 2:
-                    line = list(unicode(cell, 'utf-8') for cell in line)
-                lines.append(line)
-            return lines
 
 class MsmarcoProcessor(DataProcessor):
     """Processor for the MS-MARCO data set."""
@@ -207,6 +197,7 @@ class MsmarcoProcessor(DataProcessor):
 
         return sorted_run
 
+
     def load_train_triples(self, path):
         triples = []
         with open(path) as f:
@@ -226,6 +217,7 @@ class MsmarcoProcessor(DataProcessor):
                 self.collection[doc_id] = doc_text.replace('\n', ' ')
                 if i % 1000000 == 0:
                     print('Loading collection, doc {}'.format(i))
+
 
     def merge(self, qrels, run, queries):
         """Merge qrels and runs into a single dict of key: query, 
