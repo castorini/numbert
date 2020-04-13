@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import pickle
 
 import numpy as np
 import re
@@ -80,16 +81,15 @@ def get_sampler(dataset):
 
 
 
-def train(args, train_dataset, model, tokenizer, train_guid = None):
+def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logging = False):
     """ Train the model """
     if xm.is_master_ordinal():
         # Only master writes to Tensorboard
         tb_writer = SummaryWriter(args.tensorboard_logdir)
 
-    args.train_batch_size = args.per_gpu_train_batch_size * max(1, xm.xrt_world_size())
+    args.train_batch_size = args.per_gpu_train_batch_size
     if args.use_tfrecord:
-        data_set_args = {'batch_size': args.train_batch_size if args.local_rank == -1 \
-                                        else args.per_gpu_train_batch_size, # todo check if words for distributed
+        data_set_args = {'batch_size': args.train_batch_size, # todo check if words for distributed
                          'max_seq_len': args.max_seq_length,
                          'train': True,
                          'num_workers': max(args.num_workers, 1),
@@ -147,16 +147,6 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
         except ImportError:
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
         model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
-
-    # multi-gpu training (should be after apex fp16 initialization)
-    if args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-
-    # Distributed training (should be after apex fp16 initialization)
-    if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True,
-        )
 
     # Train!
     logger.info("***** Running training *****")
@@ -232,16 +222,10 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
             outputs = model(**inputs)
             loss = outputs[0]  # model outputs are always tuple in transformers (see doc)
 
-            if args.n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu parallel training
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
 
-            if args.fp16:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
+            loss.backward()
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0 or (
@@ -249,10 +233,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                 len(epoch_iterator) <= args.gradient_accumulation_steps
                 and (step + 1) == len(epoch_iterator)
             ):
-                if args.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
                 xm.optimizer_step(optimizer)
                 scheduler.step()  # Update learning rate schedule
@@ -633,7 +614,7 @@ def main(args):
     logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
 
     # Set seed to have same initialization
-    set_seed(args)
+    set_seed(args) 
 
     # Prepare Ranking task
     args.task_name = args.task_name.lower()
@@ -672,12 +653,7 @@ def main(args):
     )
 
     if xm.is_master_ordinal():
-            # Save trained model.
-            # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-
-            # Create output directory if needed
-            if not os.path.exists(args.output_dir):
-                os.makedirs(args.output_dir)
+        xm.rendezvous("download_only_once")
 
     model.to(args.device)
 

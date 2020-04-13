@@ -76,3 +76,4 @@ class TrainingArguments(TrainingArguments):
     num_cores: int = field(default=8, metadata={"help": "Number of TPU cores to use (1 or 8)."})
     metrics_debug: bool = field(default=False, metadata={"help":"Whether to print debug metrics."})
     only_log_master: bool = field(default=False, metadata={"help": "Only log master"})
+    tensorboard_logdir: str = field(default="./runs", metadata={"help": "Where to write tensorboard metrics."})
