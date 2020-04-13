@@ -605,7 +605,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         return dataset, guid_list
 
 
-def main():
+def main(args):
     if (
         os.path.exists(args.output_dir)
         and os.listdir(args.output_dir)
@@ -633,7 +633,7 @@ def main():
     logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
 
     # Set seed to have same initialization
-    set_seed(args.seed)
+    set_seed(args)
 
     # Prepare Ranking task
     args.task_name = args.task_name.lower()

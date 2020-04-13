@@ -4,6 +4,7 @@ from transformers import (
     TrainingArguments,
     MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
 )
+from numbert.utils.utils_numbert import processors
 
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING.keys())
@@ -73,5 +74,5 @@ class TrainingArguments(TrainingArguments):
     trec_output: bool = field(default=False, metadata={"help": "Return TREC output"})
     print_loss_steps: int = field(default=50, metadata={"help": "Print loss every X updates steps."})
     num_cores: int = field(default=8, metadata={"help": "Number of TPU cores to use (1 or 8)."})
-    metrics_debug: bool = field(default=False, metadata="Whether to print debug metrics.")
+    metrics_debug: bool = field(default=False, metadata={"help":"Whether to print debug metrics."})
     only_log_master: bool = field(default=False, metadata={"help": "Only log master"})

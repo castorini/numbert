@@ -22,8 +22,6 @@ import json
 import logging
 import os
 import random
-from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import re
@@ -34,7 +32,6 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
 from transformers import (
-    MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING,
     WEIGHTS_NAME,
     AdamW,
     AutoConfig,
@@ -44,7 +41,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-from numbert.utils import ModelArguments, DataProcessingArguments, TrainingArguments
+from numbert.utils.args import ModelArguments, DataProcessingArguments, TrainingArguments
 from numbert.utils.utils_numbert import (
     compute_metrics,
     convert_examples_to_features,
