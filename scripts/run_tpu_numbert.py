@@ -196,12 +196,14 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                     if not os.path.exists(output_dir):
                         os.makedirs(output_dir)
                     torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                    model_to_save.save_pretrained(output_dir)
+                    tokenizer.save_pretrained(output_dir)
+                    logger.info("Saving model checkpoint to %s", output_dir)
+                    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+                    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+                    logger.info("Saving optimizer and scheduler states to %s", output_dir)
                 # Barrier to wait for saving checkpoint.
                 xm.rendezvous("mid_training_checkpoint")
-                # model.save_pretrained needs to be called by all ordinals
-                model.save_pretrained(output_dir)
-                logger.info("Saving model checkpoint to %s", output_dir)
-
             model.train()
             if args.use_tfrecord:
                 batch = {k: v.to(args.device) for k,v in batch.items()}
@@ -657,13 +659,13 @@ def main(args):
 
             # Good practice: save your training arguments together with the trained model
             torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
+            # Save a trained model, configuration and tokenizer using `save_pretrained()`.
+            # They can then be reloaded using `from_pretrained()`
+            model_to_save = (
+                model.module if hasattr(model, "module") else model
+            )  # Take care of distributed/parallel training
+            model_to_save.save_pretrained(args.output_dir)
         xm.rendezvous("post_training_checkpoint")
-        # Save a trained model, configuration and tokenizer using `save_pretrained()`.
-        # They can then be reloaded using `from_pretrained()`
-        model_to_save = (
-            model.module if hasattr(model, "module") else model
-        )  # Take care of distributed/parallel training
-        model_to_save.save_pretrained(args.output_dir)
         # Load a trained model and vocabulary that you have fine-tuned
         model = AutoModelForSequenceClassification.from_pretrained(args.output_dir)
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
