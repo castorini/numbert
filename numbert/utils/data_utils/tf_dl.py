@@ -21,7 +21,8 @@ import tensorflow as tf
 import torch
 
 class TFRecordDataLoader(object):
-    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco", in_batch_negative=False):
+    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco", 
+                 in_batch_negative=False, rank = -1, num_shards=8):
         tf.random.set_seed(seed)
         if isinstance(records, str):
             records  = [records]
@@ -55,6 +56,9 @@ class TFRecordDataLoader(object):
             self.dataset = self.dataset.shuffle(buffer_size=100)
         else:
             self.dataset = tf.data.TFRecordDataset(records)
+
+        if rank!=-1:
+            self.dataset = self.dataset.shard(num_shards=num_shards, index=rank)
 
         # Instantiate dataloader (do not drop remainder for eval)
         loader_args = {'batch_size': batch_size, 

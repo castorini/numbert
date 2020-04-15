@@ -88,7 +88,8 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                          'seed': args.seed, # + xm.get_ordinal() + 1,
                          'threaded_dl': args.num_workers > 0,
                          'task': args.task_name,
-                         'in_batch_negative': args.in_batch_negative
+                         'in_batch_negative': args.in_batch_negative,
+                         'rank': args.get_ordinal()
                          }
         train_dataloader = tf_dl.TFRecordDataLoader(train_dataset,
                                                     **data_set_args) #here train dataset is just path to tf record file
@@ -312,7 +313,8 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
                              'num_workers': max(args.num_workers, 1),
                              'seed': args.seed, #args.seed + args.rank + 1,
                              'threaded_dl': args.num_workers > 0,
-                             'task': args.task_name
+                             'task': args.task_name,
+                             'rank': xm.get_ordinal()
                              }
             eval_dataloader = tf_dl.TFRecordDataLoader(eval_dataset,
                                                        **data_set_args) #here eval dataset is just path to tf record file
