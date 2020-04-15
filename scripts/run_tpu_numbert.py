@@ -196,6 +196,9 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                     if not os.path.exists(output_dir):
                         os.makedirs(output_dir)
                     torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                    model_to_save = (
+                        model.module if hasattr(model, "module") else model
+                    ) 
                     model_to_save.save_pretrained(output_dir)
                     tokenizer.save_pretrained(output_dir)
                     logger.info("Saving model checkpoint to %s", output_dir)
