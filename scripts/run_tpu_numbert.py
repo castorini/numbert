@@ -89,7 +89,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                          'threaded_dl': args.num_workers > 0,
                          'task': args.task_name,
                          'in_batch_negative': args.in_batch_negative,
-                         'rank': args.get_ordinal()
+                         'rank': xm.get_ordinal()
                          }
         train_dataloader = tf_dl.TFRecordDataLoader(train_dataset,
                                                     **data_set_args) #here train dataset is just path to tf record file
@@ -173,7 +173,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
         logger.info("  Continuing training from global step %d", global_step)
         logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
 
-    tr_loss, logging_loss = 0.0, 0.0
+    tr_loss, logging_loss, print_loss = 0.0, 0.0, 0.0
     model.zero_grad()
 
     train_iterator = trange(
@@ -197,7 +197,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
 
             if args.use_tfrecord:
                 batch_guids = batch.pop('guid', None)
-                if step < 42:
+                if step < 2:
                     logger.info(batch_guids)
                 batch_len_gt_titles = batch.pop('len_gt_titles', None)
                 if args.model_type == 'distilbert' or args.model_type not in ["bert", "xlnet", "albert"]:
@@ -264,13 +264,11 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                         model.module if hasattr(model, "module") else model
                     )  # Take care of distributed/parallel training
                     model_to_save.save_pretrained(output_dir)
-                    tokenizer.save_pretrained(output_dir)
-
                     logger.info("Saving model checkpoint to %s", output_dir)
+                    if xm.is_master_ordinal() and global_step % args.print_loss_steps == 0:
+                        logging.info("Loss: %f", (tr_loss - print_loss)/args.print_loss_steps)
+                        print_loss = tr_loss
 
-                    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-                    logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
