@@ -184,10 +184,23 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
         train_dataloader = pl.ParallelLoader(train_dataloader, [args.device]).per_device_loader(args.device)
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=disable_logging)
         for step, batch in enumerate(epoch_iterator):
+
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
                 continue
+            if args.save_steps > 0 and global_step % args.save_steps == 0:
+                # Save model checkpoint
+                output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
+                if xm.is_master_ordinal():
+                    if not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                # Barrier to wait for saving checkpoint.
+                xm.rendezvous("mid_training_checkpoint")
+                # model.save_pretrained needs to be called by all ordinals
+                model.save_pretrained(output_dir)
+                logger.info("Saving model checkpoint to %s", output_dir)
 
             model.train()
             if args.use_tfrecord:
@@ -249,24 +262,9 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                         for key, value in logs.items():
                             tb_writer.add_scalar(key, value, global_step)
                         print({"step": global_step})
-
-                if args.save_steps > 0 and global_step % args.save_steps == 0:
-                    # Save model checkpoint
-                    output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
-                    if xm.is_master_ordinal():
-                        if not os.path.exists(output_dir):
-                            os.makedirs(output_dir)
-                        torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                        if global_step % args.print_loss_steps == 0:
-                            logging.info("Loss: %f", (tr_loss - print_loss)/args.print_loss_steps)
-                            print_loss = tr_loss
-                    # Barrier to wait for saving checkpoint.
-                    xm.rendezvous("mid_training_checkpoint")
-                    model_to_save = (
-                        model.module if hasattr(model, "module") else model
-                    )  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    logger.info("Saving model checkpoint to %s", output_dir)
+                if xm.is_master_ordinal() and args.logging_steps > 0 and global_step % args.print_loss_steps == 0:
+                    logging.info("Loss: %f", (tr_loss - print_loss)/args.print_loss_steps)
+                    print_loss = tr_loss
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
