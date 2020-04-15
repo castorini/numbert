@@ -189,7 +189,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
                 continue
-            if args.save_steps > 0 and global_step % args.save_steps == 0:
+            if global_step > 0 and args.save_steps > 0 and global_step % args.save_steps == 0:
                 # Save model checkpoint
                 output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
                 if xm.is_master_ordinal():
