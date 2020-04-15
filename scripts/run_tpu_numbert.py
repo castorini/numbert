@@ -74,13 +74,6 @@ def set_seed(args):
     torch.manual_seed(args.seed)
 
 
-def get_sampler(dataset):
-    if xm.xrt_world_size() <= 1:
-        return RandomSampler(dataset)
-    return DistributedSampler(dataset, num_replicas=xm.xrt_world_size(), rank=xm.get_ordinal())
-
-
-
 def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logging = False):
     """ Train the model """
     if xm.is_master_ordinal():
@@ -92,7 +85,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                          'max_seq_len': args.max_seq_length,
                          'train': True,
                          'num_workers': max(args.num_workers, 1),
-                         'seed': args.seed + xm.get_ordinal() + 1,
+                         'seed': args.seed, # + xm.get_ordinal() + 1,
                          'threaded_dl': args.num_workers > 0,
                          'task': args.task_name,
                          'in_batch_negative': args.in_batch_negative
@@ -103,7 +96,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
         if args.in_batch_negative:
             train_sampler = SequentialSampler(train_dataset)
         else:
-            train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)     
+            train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.per_gpu_train_batch_size)
 
     # Redundant maybe but useful
@@ -151,7 +144,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", train_per_epoch)
     logger.info("  Num Epochs = %d", args.num_train_epochs)
-    logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
+    logger.info("  Instantaneous batch size per TPU core = %d", args.per_gpu_train_batch_size)
     logger.info(
         "  Total train batch size (w. parallel, distributed & accumulation) = %d",
         args.per_gpu_train_batch_size
@@ -203,7 +196,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
 
             if args.use_tfrecord:
                 batch_guids = batch.pop('guid', None)
-                if step < 2:
+                if step < 42:
                     logger.info(batch_guids)
                 batch_len_gt_titles = batch.pop('len_gt_titles', None)
                 if args.model_type == 'distilbert' or args.model_type not in ["bert", "xlnet", "albert"]:
@@ -307,7 +300,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
     for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
         eval_dataset, eval_guid = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True)
 
-        if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
+        if not os.path.exists(eval_output_dir):
             os.makedirs(eval_output_dir)
 
 
@@ -324,7 +317,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
             eval_dataloader = tf_dl.TFRecordDataLoader(eval_dataset,
                                                        **data_set_args) #here eval dataset is just path to tf record file
         else:
-            eval_sampler = SequentialSampler(eval_dataset) if args.local_rank == -1 else DistributedSampler(eval_dataset)
+            eval_sampler = SequentialSampler(eval_dataset)
             eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
         eval_dataloader = pl.ParallelLoader(eval_dataloader, [args.device]).per_device_loader(args.device)
 
@@ -545,17 +538,16 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 is_encode_batch = args.encode_batch)
         if args.use_tfrecord:
             guid_list = features
-        if args.local_rank in [-1, 0]:
-            if not args.use_tfrecord:
-                for f in features:
-                    guid_list.append(f.guid)
-                logger.info("Saving features into cached file %s", cached_features_file)
-                torch.save(features, cached_features_file)
-            with open(cached_guid_map_file, "wb") as fp:
-                pickle.dump(guid_list, fp)
-            if args.task_name == "treccar":
-                with open(cached_oq_map_file, "wb") as fp:
-                    pickle.dump(ORIGINAL_QUERIES, fp)
+        if not args.use_tfrecord:
+            for f in features:
+                guid_list.append(f.guid)
+            logger.info("Saving features into cached file %s", cached_features_file)
+            torch.save(features, cached_features_file)
+        with open(cached_guid_map_file, "wb") as fp:
+            pickle.dump(guid_list, fp)
+        if args.task_name == "treccar":
+            with open(cached_oq_map_file, "wb") as fp:
+                pickle.dump(ORIGINAL_QUERIES, fp)
 
     if xm.is_master_ordinal():
         xm.rendezvous("load_and_cache_examples")
@@ -625,9 +617,6 @@ def main(args):
         )  # Make sure only the first process in distributed training will download model & vocab
 
     # Load pretrained model and tokenizer
-    if args.local_rank not in [-1, 0]:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
     args.model_type = args.model_type.lower()
     config = AutoConfig.from_pretrained(
         args.config_name if args.config_name else args.model_name_or_path,
@@ -652,7 +641,6 @@ def main(args):
     model.to(args.device)
 
     logger.info("Training/evaluation parameters %s", args)
-
 
     # Training
     if args.do_train:
@@ -687,7 +675,7 @@ def main(args):
 
     # Evaluation
     results = {}
-    if args.do_eval and args.local_rank in [-1, 0]:
+    if args.do_eval:
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
@@ -708,6 +696,7 @@ def main(args):
 
     return results
 
+
 def get_args():
     parser = HfArgumentParser((ModelArguments, DataProcessingArguments, TrainingArguments))
     model_args, dataprocessing_args, training_args = parser.parse_args_into_dataclasses()
@@ -716,6 +705,7 @@ def get_args():
     # but soon, we'll keep distinct sets of args, with a cleaner separation of concerns.
     args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
     return args
+
 
 def _mp_fn(rank, args):
     main(args)
