@@ -74,7 +74,7 @@ def set_seed(args):
     torch.manual_seed(args.seed)
 
 
-def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logging = False):
+def train(args, train_dataset, train_guid = None, disable_logging = False):
     global tokenizer, config, model
 
     # tpu-comment: Get TPU/XLA Device
