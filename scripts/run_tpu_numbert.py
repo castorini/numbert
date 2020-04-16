@@ -386,6 +386,8 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
         preds = xm.mesh_reduce("eval_preds", preds, np.concatenate)
         out_label_ids = xm.mesh_reduce("eval_out_label_ids", out_label_ids, np.concatenate)
         lguids = list(xm.mesh_reduce("eval_lguids", lguids, np.concatenate))
+        if args.task_name == "treccar":
+            llen_gt_titles = xm.mesh_reduce("eval_llen_gt_titles", llen_gt_titles, np.concatenate)
 
         numbert_predictions = {}
         numbert_labels = {}
