@@ -74,6 +74,10 @@ def set_seed(args):
 
 
 def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logging = False):
+    # tpu-comment: Get TPU/XLA Device
+    args.device = xm.xla_device()
+    model.to(args.device)
+
     """ Train the model """
     if xm.is_master_ordinal():
         # Only master writes to Tensorboard
@@ -253,11 +257,6 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
 
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     logs = {}
-                    if args.evaluate_during_training:
-                        results = evaluate(args, model, tokenizer, disable_logging=disable_logging)
-                        for key, value in results.items():
-                            eval_key = "eval_{}".format(key)
-                            logs[eval_key] = value
                     if xm.is_master_ordinal():
                         loss_scalar = (tr_loss - logging_loss) / args.logging_steps
                         learning_rate_scalar = scheduler.get_lr()[0]
@@ -286,7 +285,63 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
     return global_step, loss.item()
 
 
-def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
+def train_mp_fn(rank, args, tokenizer):
+    # Setup logging
+    logging.basicConfig(
+        format="[xla:{}] %(asctime)s - %(levelname)s - %(name)s -   %(message)s".format(xm.get_ordinal()),
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+    disable_logging = False
+    if not xm.is_master_ordinal() and args.only_log_master:
+        # Disable all non-master loggers below CRITICAL.
+        logging.disable(logging.CRITICAL)
+        disable_logging = True
+
+    train_dataset, train_guid = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
+    global_step, tr_loss = train(args, train_dataset, model, tokenizer, train_guid, disable_logging=disable_logging)
+    logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
+
+    if xm.is_master_ordinal():
+        # Save trained model.
+        # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
+
+        # Create output directory if needed
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir)
+
+        logger.info("Saving model checkpoint to %s", args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+
+        # Good practice: save your training arguments together with the trained model
+        torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
+        # Save a trained model, configuration and tokenizer using `save_pretrained()`.
+        # They can then be reloaded using `from_pretrained()`
+    model_to_save = (
+        model.module if hasattr(model, "module") else model
+    )  # Take care of distributed/parallel training
+    xm.rendezvous("post_training_checkpoint")
+    model_to_save.save_pretrained(args.output_dir)
+
+
+def evaluate(rank, args, model, tokenizer, prefix=""):
+    # Setup logging
+    logging.basicConfig(
+        format="[xla:{}] %(asctime)s - %(levelname)s - %(name)s -   %(message)s".format(xm.get_ordinal()),
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+    disable_logging = False
+    if not xm.is_master_ordinal() and args.only_log_master:
+        # Disable all non-master loggers below CRITICAL.
+        logging.disable(logging.CRITICAL)
+        disable_logging = True
+
+    # tpu-comment: Get TPU/XLA Device
+    args.device = xm.xla_device()
+    model.to(args.device)
+
+
     """Evaluate the model"""
     if xm.is_master_ordinal():
         # Only master writes to Tensorboard
@@ -583,6 +638,9 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         return dataset, guid_list
 
 
+#    xmp.spawn(_mp_fn, args=(args,), nprocs=args.num_cores)
+
+
 def main(args):
     if (
         os.path.exists(args.output_dir)
@@ -594,22 +652,6 @@ def main(args):
             f"Output directory ({args.output_dir}) already exists and is not empty. Use --overwrite_output_dir to overcome."
         )
 
-    # tpu-comment: Get TPU/XLA Device
-    args.device = xm.xla_device()
-
-    # Setup logging
-    logging.basicConfig(
-        format="[xla:{}] %(asctime)s - %(levelname)s - %(name)s -   %(message)s".format(xm.get_ordinal()),
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
-    disable_logging = False
-    if not xm.is_master_ordinal() and args.only_log_master:
-        # Disable all non-master loggers below CRITICAL.
-        logging.disable(logging.CRITICAL)
-        disable_logging = True
-    logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
-    logger.info("Process is using %s", xm.xla_real_devices([str(args.device)])[0])
     # Set seed to have same initialization
     set_seed(args) 
 
@@ -622,11 +664,6 @@ def main(args):
     label_list = processor.get_labels()
     num_labels = len(label_list)
 
-    if not xm.is_master_ordinal():
-        xm.rendezvous(
-            "download_only_once"
-        )  # Make sure only the first process in distributed training will download model & vocab
-
     # Load pretrained model and tokenizer
     args.model_type = args.model_type.lower()
     config = AutoConfig.from_pretrained(
@@ -636,62 +673,28 @@ def main(args):
         cache_dir=args.cache_dir,
         xla_device=True
     )
-    if args.do_train: #only do for train
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir,
-            use_fast=True,
-        )
-        model = AutoModelForSequenceClassification.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config,
-            cache_dir=args.cache_dir,
-        )
-
-        model.to(args.device)
-
-
-    if xm.is_master_ordinal():
-        xm.rendezvous("download_only_once")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir,
+        use_fast=True,
+    )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.model_name_or_path,
+        from_tf=bool(".ckpt" in args.model_name_or_path),
+        config=config,
+        cache_dir=args.cache_dir,
+    )
 
 
     logger.info("Training/evaluation parameters %s", args)
 
     # Training
     if args.do_train:
-        train_dataset, train_guid = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
-        global_step, tr_loss = train(args, train_dataset, model, tokenizer, train_guid, disable_logging=disable_logging)
-        logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
-
-        if xm.is_master_ordinal():
-            # Save trained model.
-            # Saving best-practices: if you use defaults names for the model, you can reload it using from_pretrained()
-
-            # Create output directory if needed
-            if not os.path.exists(args.output_dir):
-                os.makedirs(args.output_dir)
-
-            logger.info("Saving model checkpoint to %s", args.output_dir)
-            tokenizer.save_pretrained(args.output_dir)
-
-            # Good practice: save your training arguments together with the trained model
-            torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
-            # Save a trained model, configuration and tokenizer using `save_pretrained()`.
-            # They can then be reloaded using `from_pretrained()`
-        model_to_save = (
-            model.module if hasattr(model, "module") else model
-        )  # Take care of distributed/parallel training
-        xm.rendezvous("post_training_checkpoint")
-        model_to_save.save_pretrained(args.output_dir)
+        xmp.spawn(train_mp_fn, args=(args,tokenizer,), nprocs=args.num_cores)
 
     # Evaluation
     results = {}
     if args.do_eval:
-        logger.info("tok loading eval")
-        xm.rendezvous("pre tokenizer eval")
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
-        logger.info("tok loaded eval")
-        xm.rendezvous("tokenizer eval")
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
             checkpoints = list(
@@ -702,15 +705,8 @@ def main(args):
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             prefix = checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else ""
-            logger.info("model loading")
-            xm.rendezvous("pre eval model load")
             model = AutoModelForSequenceClassification.from_pretrained(checkpoint, from_tf=bool(".ckpt" in args.model_name_or_path), config=config)
-            logger.info("model loaded")
-            xm.rendezvous("eval model load")
-            model.to(args.device)
-            result = evaluate(args, model, tokenizer, prefix=prefix, disable_logging=disable_logging)
-            result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
-            results.update(result)
+            xmp.spawn(evaluate, args=(args, model, tokenizer, prefix,), nprocs=args.num_cores)
     return results
 
 
@@ -723,14 +719,9 @@ def get_args():
     args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
     return args
 
-
-def _mp_fn(rank, args):
-    main(args)
-
-
 def main_cli():
     args = get_args()
-    xmp.spawn(_mp_fn, args=(args,), nprocs=args.num_cores)
+    main(args)
 
 
 if __name__ == "__main__":
