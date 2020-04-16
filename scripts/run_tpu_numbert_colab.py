@@ -63,6 +63,7 @@ except ImportError:
     from tensorboardX import SummaryWriter
 
 logger = logging.getLogger(__name__)
+tokenizer, config, model = None, None, None
 
 
 ORIGINAL_QUERIES = None # maintains list of original queries, which are used especially during TREC-CAR output
@@ -74,6 +75,8 @@ def set_seed(args):
 
 
 def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logging = False):
+    global tokenizer, config, model
+
     # tpu-comment: Get TPU/XLA Device
     args.device = xm.xla_device()
     model.to(args.device)
@@ -285,7 +288,8 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
     return global_step, loss.item()
 
 
-def train_mp_fn(rank, args, tokenizer):
+def train_mp_fn(rank, args):
+    global tokenizer, config, model
     # Setup logging
     logging.basicConfig(
         format="[xla:{}] %(asctime)s - %(levelname)s - %(name)s -   %(message)s".format(xm.get_ordinal()),
@@ -299,7 +303,7 @@ def train_mp_fn(rank, args, tokenizer):
         disable_logging = True
 
     train_dataset, train_guid = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
-    global_step, tr_loss = train(args, train_dataset, model, tokenizer, train_guid, disable_logging=disable_logging)
+    global_step, tr_loss = train(args, train_dataset, train_guid, disable_logging=disable_logging)
     logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     if xm.is_master_ordinal():
@@ -324,7 +328,9 @@ def train_mp_fn(rank, args, tokenizer):
     model_to_save.save_pretrained(args.output_dir)
 
 
-def evaluate(rank, args, model, tokenizer, prefix=""):
+def evaluate(rank, args, prefix=""):
+    global tokenizer, config, model
+
     # Setup logging
     logging.basicConfig(
         format="[xla:{}] %(asctime)s - %(levelname)s - %(name)s -   %(message)s".format(xm.get_ordinal()),
@@ -642,6 +648,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
 
 
 def main(args):
+    global tokenizer, config, model
+
     if (
         os.path.exists(args.output_dir)
         and os.listdir(args.output_dir)
@@ -689,7 +697,7 @@ def main(args):
 
     # Training
     if args.do_train:
-        xmp.spawn(train_mp_fn, args=(args,tokenizer,), nprocs=args.num_cores)
+        xmp.spawn(train_mp_fn, args=(args,), nprocs=args.num_cores)
 
     # Evaluation
     results = {}
@@ -706,7 +714,7 @@ def main(args):
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             prefix = checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else ""
             model = AutoModelForSequenceClassification.from_pretrained(checkpoint, from_tf=bool(".ckpt" in args.model_name_or_path), config=config)
-            xmp.spawn(evaluate, args=(args, model, tokenizer, prefix,), nprocs=args.num_cores)
+            xmp.spawn(evaluate, args=(args, prefix,), nprocs=args.num_cores)
     return results
 
 
