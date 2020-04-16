@@ -632,7 +632,7 @@ def main(args):
         cache_dir=args.cache_dir,
         xla_device=True
     )
-    if args.do_train:
+    if args.do_train: #only do for train
         tokenizer = AutoTokenizer.from_pretrained(
             args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir,
             use_fast=True,
@@ -680,18 +680,13 @@ def main(args):
         xm.rendezvous("post_training_checkpoint")
         model_to_save.save_pretrained(args.output_dir)
 
-        # Load a trained model and vocabulary that you have fine-tuned
-        model = AutoModelForSequenceClassification.from_pretrained(args.output_dir)
-        tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
-        model.to(args.device)
-
     # Evaluation
     results = {}
     if args.do_eval:
-        logger.info("tok loading")
+        logger.info("tok loading eval")
         xm.rendezvous("pre tokenizer eval")
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
-        logger.info("tok loaded")
+        logger.info("tok loaded eval")
         xm.rendezvous("tokenizer eval")
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
