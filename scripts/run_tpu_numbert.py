@@ -300,8 +300,8 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
     results = {}
     for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
         eval_dataset, eval_guid = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True)
-
-        if not os.path.exists(eval_output_dir):
+        logger.info("Loaded eval cache")
+        if xm.is_master_ordinal() and not os.path.exists(eval_output_dir):
             os.makedirs(eval_output_dir)
 
 
@@ -321,6 +321,8 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
         else:
             eval_sampler = SequentialSampler(eval_dataset)
             eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
+        logger.info("Loaded eval cache 2")
+        xm.rendezvous("pre_eval_dataloader")
         eval_dataloader = pl.ParallelLoader(eval_dataloader, [args.device]).per_device_loader(args.device)
 
         # Eval!
@@ -379,6 +381,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
                     llen_gt_titles = np.append(llen_gt_titles, batch_len_gt_titles.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
 
+        xm.rendezvous("Evaluation done")
         # tpu-comment: Get all predictions and labels from all worker shards of eval dataset
         preds = xm.mesh_reduce("eval_preds", preds, np.concatenate)
         out_label_ids = xm.mesh_reduce("eval_out_label_ids", out_label_ids, np.concatenate)
@@ -627,21 +630,24 @@ def main(args):
         cache_dir=args.cache_dir,
         xla_device=True
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir,
-        use_fast=True,
-    )
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_name_or_path,
-        from_tf=bool(".ckpt" in args.model_name_or_path),
-        config=config,
-        cache_dir=args.cache_dir,
-    )
+    if args.do_train:
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, cache_dir=args.cache_dir,
+            use_fast=True,
+        )
+        model = AutoModelForSequenceClassification.from_pretrained(
+            args.model_name_or_path,
+            from_tf=bool(".ckpt" in args.model_name_or_path),
+            config=config,
+            cache_dir=args.cache_dir,
+        )
+
+        model.to(args.device)
+
 
     if xm.is_master_ordinal():
         xm.rendezvous("download_only_once")
 
-    model.to(args.device)
 
     logger.info("Training/evaluation parameters %s", args)
 
@@ -666,11 +672,12 @@ def main(args):
             torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
             # Save a trained model, configuration and tokenizer using `save_pretrained()`.
             # They can then be reloaded using `from_pretrained()`
-        model_to_save.save_pretrained(args.output_dir)
         model_to_save = (
             model.module if hasattr(model, "module") else model
         )  # Take care of distributed/parallel training
         xm.rendezvous("post_training_checkpoint")
+        model_to_save.save_pretrained(args.output_dir)
+
         # Load a trained model and vocabulary that you have fine-tuned
         model = AutoModelForSequenceClassification.from_pretrained(args.output_dir)
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
@@ -679,7 +686,11 @@ def main(args):
     # Evaluation
     results = {}
     if args.do_eval:
+        logger.info("tok loading")
+        xm.rendezvous("pre tokenizer eval")
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
+        logger.info("tok loaded")
+        xm.rendezvous("tokenizer eval")
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
             checkpoints = list(
@@ -690,8 +701,11 @@ def main(args):
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             prefix = checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else ""
-
-            model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+            logger.info("model loading")
+            xm.rendezvous("pre eval model load")
+            model = AutoModelForSequenceClassification.from_pretrained(checkpoint, from_tf=bool(".ckpt" in args.model_name_or_path), config=config)
+            logger.info("model loaded")
+            xm.rendezvous("eval model load")
             model.to(args.device)
             result = evaluate(args, model, tokenizer, prefix=prefix, disable_logging=disable_logging)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
