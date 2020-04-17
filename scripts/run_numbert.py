@@ -238,11 +238,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None):
                 loss.backward()
 
             tr_loss += loss.item()
-            if (step + 1) % args.gradient_accumulation_steps == 0 or (
-                # last step in epoch but step is always smaller than gradient_accumulation_steps
-                len(epoch_iterator) <= args.gradient_accumulation_steps
-                and (step + 1) == len(epoch_iterator)
-            ):
+            if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.fp16:
                     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
                 else:

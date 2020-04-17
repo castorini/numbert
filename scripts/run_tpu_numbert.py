@@ -191,7 +191,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
                 continue
-            if global_step >= 0 and args.save_steps > 0 and global_step % args.save_steps == 0:
+            if (step + 1) % args.gradient_accumulation_steps == 0 and global_step >= 0 and args.save_steps > 0 and global_step % args.save_steps == 0:
                 # Save model checkpoint
                 output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step))
                 if xm.is_master_ordinal():
@@ -210,6 +210,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                 xm.rendezvous("mid_training_checkpoint")
                 model_to_save.save_pretrained(output_dir)
                 logger.info("Saving model checkpoint to %s", output_dir)
+                xm.rendezvous("mid_saved_model")
             model.train()
             if args.use_tfrecord:
                 batch = {k: v.to(args.device) for k,v in batch.items()}
@@ -244,18 +245,14 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
             loss_item = loss.item()
             tr_loss += loss_item
             batch_loss += loss_item
-            if (step + 1) % args.gradient_accumulation_steps == 0 or (
-                # last step in epoch but step is always smaller than gradient_accumulation_steps
-                len(epoch_iterator) <= args.gradient_accumulation_steps
-                and (step + 1) == len(epoch_iterator)
-            ):
+            if (step + 1) % args.gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
                 xm.optimizer_step(optimizer)
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
-                print_loss = xm.mesh_reduce("batch loss", batch_loss, np.mean)
+                print_loss = batch_loss
                 batch_loss = 0.0
 
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
@@ -270,7 +267,6 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                         learning_rate_scalar = scheduler.get_lr()[0]
                         logs["learning_rate"] = learning_rate_scalar
                         logs["loss"] = loss_scalar
-                        logs["batch_loss"] = print_loss
                         logging_loss = tr_loss
                         for key, value in logs.items():
                             tb_writer.add_scalar(key, value, global_step)
