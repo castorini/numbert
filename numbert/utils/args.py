@@ -62,6 +62,7 @@ class TrainingArguments(TrainingArguments):
         default=False, metadata={"help": "Use tfrecords instead of regular caching to reduce memory load"}
     )
     is_duoBERT: bool = field(default=False, metadata={"help": "Use duoBERT"})
+    is_colab: bool = field(default=False, metadata={"help": "Use colab low resource settings"})
     do_test: bool = field(default=False, metadata={"help": "Whether to run eval on test set."})
     in_batch_negative: bool = field(
         default=False,

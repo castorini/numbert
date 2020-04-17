@@ -23,6 +23,8 @@ import logging
 import os
 import random
 import pickle
+import fcntl
+import gc
 
 import numpy as np
 import re
@@ -173,6 +175,7 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
         logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
 
     tr_loss, logging_loss, print_loss = 0.0, 0.0, 0.0
+    batch_loss = 0
     model.zero_grad()
 
     train_iterator = trange(
@@ -238,7 +241,9 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
 
             loss.backward()
 
-            tr_loss += loss.item()
+            loss_item = loss.item()
+            tr_loss += loss_item
+            batch_loss += loss_item
             if (step + 1) % args.gradient_accumulation_steps == 0 or (
                 # last step in epoch but step is always smaller than gradient_accumulation_steps
                 len(epoch_iterator) <= args.gradient_accumulation_steps
@@ -250,6 +255,8 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
+                print_loss = xm.mesh_reduce("batch loss", batch_loss, np.mean)
+                batch_loss = 0.0
 
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     logs = {}
@@ -263,13 +270,13 @@ def train(args, train_dataset, model, tokenizer, train_guid = None, disable_logg
                         learning_rate_scalar = scheduler.get_lr()[0]
                         logs["learning_rate"] = learning_rate_scalar
                         logs["loss"] = loss_scalar
+                        logs["batch_loss"] = print_loss
                         logging_loss = tr_loss
                         for key, value in logs.items():
                             tb_writer.add_scalar(key, value, global_step)
                         print({"step": global_step})
                 if xm.is_master_ordinal() and args.logging_steps > 0 and global_step % args.print_loss_steps == 0:
-                    logging.info("Loss: %f", (tr_loss - print_loss)/args.print_loss_steps)
-                    print_loss = tr_loss
+                    logging.info("Loss: %f", print_loss)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -299,7 +306,6 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
     results = {}
     for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
         eval_dataset, eval_guid = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True)
-        logger.info("Loaded eval cache")
         if xm.is_master_ordinal() and not os.path.exists(eval_output_dir):
             os.makedirs(eval_output_dir)
 
@@ -320,8 +326,6 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
         else:
             eval_sampler = SequentialSampler(eval_dataset)
             eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.per_gpu_eval_batch_size)
-        logger.info("Loaded eval cache 2")
-        xm.rendezvous("pre_eval_dataloader")
         eval_dataloader = pl.ParallelLoader(eval_dataloader, [args.device]).per_device_loader(args.device)
 
         # Eval!
@@ -377,17 +381,11 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
                 if args.task_name == "treccar":
                     llen_gt_titles = np.append(llen_gt_titles, batch_len_gt_titles.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
-            if nb_eval_steps == 2:
-                break
 
-        xm.rendezvous("Evaluation done")
         # tpu-comment: Get all predictions and labels from all worker shards of eval dataset
         preds = xm.mesh_reduce("eval_preds", preds, np.concatenate)
         out_label_ids = xm.mesh_reduce("eval_out_label_ids", out_label_ids, np.concatenate)
         lguids = list(xm.mesh_reduce("eval_lguids", lguids, np.concatenate))
-        if xm.is_master_ordinal():
-            logging.info(lguids)
-            logging.info(preds)
         lguids = list(map(lambda x: tuple(re.split(r'-',eval_guid[x[0]])), lguids))
                                                              
         if args.task_name == "treccar":
@@ -465,7 +463,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
                     logger.info("  %s = %s", key, str(result[key]))
                     writer.write("%s = %s\n" % (key, str(result[key])))
                     tb_writer.add_scalar(f"{eval_task}/{key}", results[key])
-
+    
     if args.metrics_debug:
         # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
         xm.master_print(met.metrics_report())
@@ -477,6 +475,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
 
 
 def load_and_cache_examples(args, task, tokenizer, evaluate=False):
+    # Loading and caching examples
     if not xm.is_master_ordinal():
         xm.rendezvous("load_and_cache_examples")
 
@@ -547,6 +546,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                                 task = args.task_name,
                                                 is_duoBERT = args.is_duoBERT,
                                                 is_encode_batch = args.encode_batch)
+
         if args.use_tfrecord:
             guid_list = features
         if not args.use_tfrecord:
@@ -650,10 +650,8 @@ def main(args):
 
         model.to(args.device)
 
-
     if xm.is_master_ordinal():
         xm.rendezvous("download_only_once")
-
 
     logger.info("Training/evaluation parameters %s", args)
 
@@ -681,17 +679,13 @@ def main(args):
         model_to_save = (
             model.module if hasattr(model, "module") else model
         )  # Take care of distributed/parallel training
-        xm.rendezvous("post_training_checkpoint")
         model_to_save.save_pretrained(args.output_dir)
+        xm.rendezvous("post_training_save_checkpoint")
 
     # Evaluation
     results = {}
     if args.do_eval:
-        logger.info("tok loading eval")
-        xm.rendezvous("pre tokenizer eval")
         tokenizer = AutoTokenizer.from_pretrained(args.output_dir, use_fast=True)
-        logger.info("tok loaded eval")
-        xm.rendezvous("tokenizer eval")
         checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
             checkpoints = list(
@@ -702,10 +696,14 @@ def main(args):
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
             prefix = checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else ""
-            logger.info("model loading")
-            xm.rendezvous("pre eval model load")
+            if args.is_colab: #low resource setting use locks to not overwhelm RAM by 8x model size
+                lock_file = "tpu.lock"
+                fd = open(lock_file, "w")
+                fcntl.lockf(fd, fcntl.LOCK_EX)
             model = AutoModelForSequenceClassification.from_pretrained(checkpoint, from_tf=bool(".ckpt" in args.model_name_or_path), config=config)
-            logger.info("model loaded")
+            if args.is_colab:
+                gc.collect()
+                fcntl.lockf(fd, fcntl.LOCK_UN)
             xm.rendezvous("eval model load")
             model.to(args.device)
             result = evaluate(args, model, tokenizer, prefix=prefix, disable_logging=disable_logging)
@@ -717,9 +715,6 @@ def main(args):
 def get_args():
     parser = HfArgumentParser((ModelArguments, DataProcessingArguments, TrainingArguments))
     model_args, dataprocessing_args, training_args = parser.parse_args_into_dataclasses()
-
-    # For now, let's merge all the sets of args into one,
-    # but soon, we'll keep distinct sets of args, with a cleaner separation of concerns.
     args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
     return args
 
