@@ -2,21 +2,16 @@ import os
 import pickle
 import logging
 
-import torch
 from torch.utils.data import Dataset
-
 
 from transformers.tokenization_utils import trim_batch
 
-
 import tensorflow as tf
-
 
 from numbert.utils.utils_numbert import (
     processors,
     create_int64_feature
 )  
-
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +145,7 @@ class Seq2SeqRankingsDataset(Dataset):
             self.writer.write(tf_example.SerializeToString())
 
     @staticmethod
-    def trim_seq2seq_batch(batch, pad_token_id):
+    def trim_seq2seq_batch(batch, pad_token_id): #TODO check batch numbers?
         y = trim_batch(batch[4], pad_token_id)
         source_ids, source_mask = trim_batch(batch[0], pad_token_id, attention_mask=batch[1])
         return source_ids, source_mask, y
