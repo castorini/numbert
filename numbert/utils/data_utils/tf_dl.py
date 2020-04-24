@@ -21,27 +21,27 @@ import tensorflow as tf
 import torch
 
 class TFRecordDataLoader(object):
-    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=1, threaded_dl=False, task="msmarco", 
-                 in_batch_negative=False, rank = -1, num_shards=8):
+    def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=42, threaded_dl=False, task="msmarco", 
+                 in_batch_negative=False, rank = -1, num_shards=8, max_tseq_len=None):
         tf.random.set_seed(seed)
         if isinstance(records, str):
             records  = [records]
 
+        record_format = {"input_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                         "attention_mask": tf.io.FixedLenFeature([max_seq_len], tf.int64),
+                         "labels" : tf.io.FixedLenFeature([1], tf.int64),
+                         "guid" : tf.io.FixedLenFeature([1], tf.int64)}
+
+        if max_tseq_len == None: #classification
+            record_format["token_type_ids"] = tf.io.FixedLenFeature([max_seq_len], tf.int64)
+        else: # seq2seq (like T5)
+            record_format["target_ids"] = tf.io.FixedLenFeature([max_tseq_len], tf.int64)
+
         if task == "treccar":
-            self.record_converter = Record2Example({"input_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "attention_mask": tf.io.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "token_type_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "labels" : tf.io.FixedLenFeature([1], tf.int64),
-                                                    "guid" : tf.io.FixedLenFeature([1], tf.int64),
-                                                    "len_gt_titles" : tf.io.FixedLenFeature([1], tf.int64)})
-        else:
-            self.record_converter = Record2Example({"input_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "attention_mask": tf.io.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "token_type_ids": tf.io.FixedLenFeature([max_seq_len], tf.int64),
-                                                    "labels" : tf.io.FixedLenFeature([1], tf.int64),
-                                                    "guid" : tf.io.FixedLenFeature([1], tf.int64)})
+            record_format["len_gt_titles"] = tf.io.FixedLenFeature([1], tf.int64)
 
-
+        self.record_converter = Record2Example(record_format)
+        
         #Instantiate dataset according to original BERT implementation
         if train and (not in_batch_negative):
             self.dataset = tf.data.Dataset.from_tensor_slices(tf.constant(records))

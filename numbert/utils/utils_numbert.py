@@ -587,7 +587,7 @@ class TreccarProcessor(DataProcessor):
                                      len_gt_titles=len(qrels)))
         return (examples, oq_list)
 
-def _create_int64_feature(value):
+def create_int64_feature(value):
   feature = tf.train.Feature(int64_list=tf.train.Int64List(value=value))
   return feature
 
@@ -754,16 +754,16 @@ def convert_examples_to_features(examples, tokenizer,
         if use_tfrecord:
             guid_list.append(example.guid)
             fdict = {
-                'input_ids': _create_int64_feature(input_ids),
-                'attention_mask': _create_int64_feature(attention_mask),
-                'token_type_ids': _create_int64_feature(token_type_ids),
-                'labels': _create_int64_feature([label]),
-                'guid': _create_int64_feature([ex_index])
+                'input_ids': create_int64_feature(input_ids),
+                'attention_mask': create_int64_feature(attention_mask),
+                'token_type_ids': create_int64_feature(token_type_ids),
+                'labels': create_int64_feature([label]),
+                'guid': create_int64_feature([ex_index])
             }
             if task == "treccar":
                 if ex_index <= 10:
                     print("TREC")
-                fdict['len_gt_titles'] = _create_int64_feature([example.len_gt_titles])
+                fdict['len_gt_titles'] = create_int64_feature([example.len_gt_titles])
 
             tf_features = tf.train.Features(feature=fdict)
             tf_example = tf.train.Example(features=tf_features)
