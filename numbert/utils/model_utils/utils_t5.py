@@ -145,6 +145,6 @@ class Seq2SeqRankingDataset(Dataset):
 
     @staticmethod
     def trim_seq2seq_batch(batch, pad_token_id): #TODO check batch numbers?
-        y = trim_batch(batch[4], pad_token_id)
-        source_ids, source_mask = trim_batch(batch[0], pad_token_id, attention_mask=batch[1])
+        y = trim_batch(batch["target_ids"], pad_token_id)
+        source_ids, source_mask = trim_batch(batch["input_ids"], pad_token_id, attention_mask=batch["attention_mask"])
         return source_ids, source_mask, y
