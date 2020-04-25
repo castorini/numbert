@@ -26,10 +26,9 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         self.dataset_kwargs: dict = dict(
             data_dir = args.data_dir,
             max_source_length = args.max_source_length,
-            max_target_length = args.max_target_length,
-            train_dataset_length = -1
+            max_target_length = args.max_target_length
         )
-
+        self.train_dataset_length = -1
     def forward(self, input_ids, attention_mask=None, decoder_input_ids=None, lm_labels=None):
         return self.model(
             input_ids, attention_mask=attention_mask, decoder_input_ids=decoder_input_ids, lm_labels=lm_labels,
@@ -114,15 +113,15 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          'max_tseq_len': self.dataset_kwargs["max_target_length"]
                          }
         if type_path == "train":
-            self.dataset_kwargs.train_dataset_length = len(dataset.guid_list)
+            self.train_dataset_length = len(dataset.guid_list)
         dataloader = tf_dl.TFRecordDataLoader(dataset.writer_file, **data_set_args)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
         dataloader = self.get_dataloader("train", batch_size=self.hparams.per_gpu_train_batch_size)
-        logger.info("Training Dataset of size %d"%self.dataset_kwargs.train_dataset_length)
+        logger.info("Training Dataset of size %d"%self.train_dataset_length)
         t_total = (
-            (self.dataset_kwargs.train_dataset_length // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu)))
+            (self.train_dataset_length // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu)))
             // self.hparams.gradient_accumulation_steps
             * float(self.hparams.num_train_epochs)
         )
