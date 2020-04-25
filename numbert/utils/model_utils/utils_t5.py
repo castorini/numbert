@@ -16,7 +16,7 @@ from numbert.utils.utils_numbert import (
 logger = logging.getLogger(__name__)
 
 
-class Seq2SeqRankingsDataset(Dataset):
+class Seq2SeqRankingDataset(Dataset):
     def __init__(
         self,
         tokenizer,
