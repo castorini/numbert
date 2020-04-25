@@ -37,7 +37,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
     def _step(self, batch):
         pad_token_id = self.tokenizer.pad_token_id
         logger.info(batch)
-        source_ids, source_mask, y = batch[0], batch[1], batch[4]
+        source_ids, source_mask, y = batch["input_ids"], batch["attention_mask"], batch["labels"]
         y_ids = y[:, :-1].contiguous()
         lm_labels = y[:, 1:].clone()
         lm_labels[y[:, 1:] == pad_token_id] = -100
