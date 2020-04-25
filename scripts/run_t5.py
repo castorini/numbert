@@ -121,7 +121,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         dataloader = self.get_dataloader("train", batch_size=self.hparams.per_gpu_train_batch_size)
         logger.info("Training Dataset of size %d"%self.train_dataset_length)
         t_total = (
-            (self.train_dataset_length // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu)))
+            (self.train_dataset_length // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu, self.hparams.n_tpu_cores)))
             // self.hparams.gradient_accumulation_steps
             * float(self.hparams.num_train_epochs)
         )
@@ -149,6 +149,7 @@ def main(args):
         logger.info("No CUDA")
     args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
     model = Seq2SeqRankingTrainer(args)
+    args.num_train_epochs = int(args.num_train_epochs) #compatibility with run_numbert.py
     trainer = generic_train(model, args)
 
     # Optionally, predict on dev set and write to output_dir
