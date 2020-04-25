@@ -97,7 +97,7 @@ class Seq2SeqRankingDataset(Dataset):
                 else:
                     batch_examples = list(map(
                         lambda ex: self.pattern.format(query = ex.text_a, 
-                                                       sentence1 = ex.text_b), 
+                                                       document = ex.text_b), 
                         self.examples[ex_index:ex_index + batch_size]))
                 if ex_index == 0:
                     logger.info(batch_examples[:5])
