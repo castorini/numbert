@@ -29,14 +29,16 @@ class Seq2SeqRankingDataset(Dataset):
     ):
         super().__init__()
         processor = processors[task_name]()
-        self.writer_file = os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))
-        cached_guid_map_file = type_path + "_guid_map.p"
+        cached_guid_map_file = os.path.join(data_dir, type_path + "_guid_map.p")
+        if self.task_name == "treccar":
+            cached_oq_map_file = os.path.join(data_dir, type_path + "_oq_map.p")
         self.task_name = task_name
         self.max_source_length = max_source_length
         self.max_target_length = max_target_length
         self.label_list = processor.get_labels()
         self.is_duoBERT = is_duoBERT
         self.tokenizer = tokenizer
+        self.writer_file = os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))
 
         if is_duoBERT:
             self.pattern = "Query: {query} sentence1: {sentence1} sentence2: {sentence2} </s>"
@@ -45,10 +47,6 @@ class Seq2SeqRankingDataset(Dataset):
             self.pattern = "Query: {query} Document: {document} Relevant: </s>"
             self.target_map = {"0": "false </s>", "1": "true </s>"}
 
-
-
-        if self.task_name == "treccar":
-            cached_oq_map_file = type_path + "_oq_map.p"
         if os.path.exists(os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))):
             with open(cached_guid_map_file, 'rb') as fp:
                 self.guid_list = pickle.load(fp)
@@ -88,6 +86,7 @@ class Seq2SeqRankingDataset(Dataset):
 
         for (ex_index, example) in enumerate(self.examples):
             if ex_index%batch_size == 0:
+                logger.info("Writing example %d of %d" % (ex_index, len(self.examples)))
                 if self.is_duoBERT:
                     batch_examples = list(map(
                         lambda ex: self.pattern.format(query = ex.text_a, 
