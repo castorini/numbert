@@ -113,7 +113,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          'in_batch_negative':self.hparams.in_batch_negative,
                          'max_tseq_len': self.dataset_kwargs["max_target_length"]
                          }
-        dataloader = tf_dl.TFRecordDataLoader(dataset, **data_set_args)
+        dataloader = tf_dl.TFRecordDataLoader(dataset.writer_file, **data_set_args)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
