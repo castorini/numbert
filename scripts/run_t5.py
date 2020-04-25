@@ -27,6 +27,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
             data_dir = args.data_dir,
             max_source_length = args.max_source_length,
             max_target_length = args.max_target_length,
+            train_dataset_length = -1
         )
 
     def forward(self, input_ids, attention_mask=None, decoder_input_ids=None, lm_labels=None):
@@ -36,8 +37,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
 
     def _step(self, batch):
         pad_token_id = self.tokenizer.pad_token_id
-        logger.info(batch)
-        source_ids, source_mask, y = batch["input_ids"], batch["attention_mask"], batch["labels"]
+        source_ids, source_mask, y = batch["input_ids"], batch["attention_mask"], batch["target_ids"]
         y_ids = y[:, :-1].contiguous()
         lm_labels = y[:, 1:].clone()
         lm_labels[y[:, 1:] == pad_token_id] = -100
@@ -113,13 +113,16 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          'in_batch_negative':self.hparams.in_batch_negative,
                          'max_tseq_len': self.dataset_kwargs["max_target_length"]
                          }
+        if type_path == "train":
+            self.dataset_kwargs.train_dataset_length = len(dataset.guid_list)
         dataloader = tf_dl.TFRecordDataLoader(dataset.writer_file, **data_set_args)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
         dataloader = self.get_dataloader("train", batch_size=self.hparams.per_gpu_train_batch_size)
+        logger.info("Training Dataset of size %d"%self.dataset_kwargs.train_dataset_length)
         t_total = (
-            (len(dataloader.dataset) // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu)))
+            (self.dataset_kwargs.train_dataset_length // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu)))
             // self.hparams.gradient_accumulation_steps
             * float(self.hparams.num_train_epochs)
         )
