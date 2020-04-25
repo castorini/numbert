@@ -29,9 +29,6 @@ class Seq2SeqRankingDataset(Dataset):
     ):
         super().__init__()
         processor = processors[task_name]()
-        cached_guid_map_file = os.path.join(data_dir, type_path + "_guid_map.p")
-        if self.task_name == "treccar":
-            cached_oq_map_file = os.path.join(data_dir, type_path + "_oq_map.p")
         self.task_name = task_name
         self.max_source_length = max_source_length
         self.max_target_length = max_target_length
@@ -39,6 +36,9 @@ class Seq2SeqRankingDataset(Dataset):
         self.is_duoBERT = is_duoBERT
         self.tokenizer = tokenizer
         self.writer_file = os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))
+        self.cached_guid_map_file = os.path.join(data_dir, type_path + "_guid_map.p")
+        if self.task_name == "treccar":
+            self.cached_oq_map_file = os.path.join(data_dir, type_path + "_oq_map.p")
 
         if is_duoBERT:
             self.pattern = "Query: {query} sentence1: {sentence1} sentence2: {sentence2} </s>"
@@ -48,10 +48,10 @@ class Seq2SeqRankingDataset(Dataset):
             self.target_map = {"0": "false </s>", "1": "true </s>"}
 
         if os.path.exists(os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))):
-            with open(cached_guid_map_file, 'rb') as fp:
+            with open(self.cached_guid_map_file, 'rb') as fp:
                 self.guid_list = pickle.load(fp)
             if task_name == "treccar":
-                with open(cached_oq_map_file, "rb") as fp:
+                with open(self.cached_oq_map_file, "rb") as fp:
                     self.original_queries = pickle.load(fp)
         else:
             if type_path != "train": # ignore for train_triples
@@ -65,10 +65,10 @@ class Seq2SeqRankingDataset(Dataset):
                 (self.examples, self.original_queries) = self.examples
             self.writer = tf.io.TFRecordWriter(self.writer_file)
             self.encode_features()
-            with open(cached_guid_map_file, "wb") as fp:
+            with open(self.cached_guid_map_file, "wb") as fp:
                 pickle.dump(self.guid_list, fp)
             if self.task_name == "treccar":
-                with open(cached_oq_map_file, "wb") as fp:
+                with open(self.cached_oq_map_file, "wb") as fp:
                     pickle.dump(self.original_queries, fp)
 
     def __len__(self):
