@@ -51,8 +51,20 @@ class DataProcessingArguments:
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
-    
-
+    max_source_length: int = field(
+        default=512,
+        metadata={
+            "help": "The maximum total source input sequence length after tokenization. Sequences longer "
+            "than this will be truncated, sequences shorter will be padded."
+        },
+    )
+    max_target_length: int = field(
+        default=2,
+        metadata={
+            "help": "The maximum total target input sequence length after tokenization. Sequences longer "
+            "than this will be truncated, sequences shorter will be padded."
+        },
+    )
 @dataclass
 class TrainingArguments(TrainingArguments):
     """

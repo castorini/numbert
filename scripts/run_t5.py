@@ -6,11 +6,11 @@ import time
 
 import torch
 from torch.utils.data import DataLoader
-
+from transformers import HfArgumentParser
 from transformer_base import BaseTransformer, add_generic_args, generic_train, get_linear_schedule_with_warmup
 
 from numbert.utils.data_utils import tf_dl 
-from numbert.utils.model_utils.utils_seq2seq import Seq2SeqRankingDataset as Dataset
+from numbert.utils.model_utils.utils_t5 import Seq2SeqRankingDataset as Dataset
 
 
 logger = logging.getLogger(__name__)
@@ -134,40 +134,12 @@ class Seq2SeqRankingTrainer(BaseTransformer):
     def test_dataloader(self) -> DataLoader:
         return self.get_dataloader("test", batch_size=self.hparams.eval_batch_size)
 
-    @staticmethod
-    def add_model_specific_args(parser, root_dir):
-        BaseTransformer.add_model_specific_args(parser, root_dir)
-        # Add BART specific options
-        parser.add_argument(
-            "--max_source_length",
-            default=512,
-            type=int,
-            help="The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded.",
-        )
-        parser.add_argument(
-            "--max_target_length",
-            default=2,
-            type=int,
-            help="The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded.",
-        )
-
-        parser.add_argument(
-            "--data_dir",
-            default=None,
-            type=str,
-            required=True,
-            help="The input data dir. Should contain the dataset files for the CNN/DM summarization task.",
-        )
-        return parser
-
 
 def main(args):
 
     # If output_dir not provided, a folder will be generated in pwd
-    if notself.hparams.output_dir:
-       self.hparams.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
+    if not args.output_dir:
+        args.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
         os.makedirs(args.output_dir)
     model = Seq2SeqRankingTrainer(args)
     trainer = generic_train(model, args)
@@ -184,9 +156,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    add_generic_args(parser, os.getcwd())
-    parser = Seq2SeqRankingTrainer.add_model_specific_args(parser, os.getcwd())
-    args = parser.parse_args()
-
+    parser = HfArgumentParser((ModelArguments, DataProcessingArguments, TrainingArguments))
+    model_args, dataprocessing_args, training_args = parser.parse_args_into_dataclasses()
+    args = argparse.Namespace(**vars(model_args), **vars(dataprocessing_args), **vars(training_args))
     main(args)
