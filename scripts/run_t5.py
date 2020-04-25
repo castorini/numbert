@@ -117,9 +117,9 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
-        dataloader = self.get_dataloader("train", batch_size=self.hparams.train_batch_size)
+        dataloader = self.get_dataloader("train", batch_size=self.hparams.per_gpu_train_batch_size)
         t_total = (
-            (len(dataloader.dataset) // (self.hparams.train_batch_size * max(1, self.hparams.n_gpu)))
+            (len(dataloader.dataset) // (self.hparams.per_gpu_train_batch_size * max(1, self.hparams.n_gpu)))
             // self.hparams.gradient_accumulation_steps
             * float(self.hparams.num_train_epochs)
         )
@@ -130,10 +130,10 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         return dataloader
 
     def val_dataloader(self) -> DataLoader:
-        return self.get_dataloader("dev", batch_size=self.hparams.eval_batch_size)
+        return self.get_dataloader("dev", batch_size=self.hparams.per_gpu_eval_batch_size)
 
     def test_dataloader(self) -> DataLoader:
-        return self.get_dataloader("test", batch_size=self.hparams.eval_batch_size)
+        return self.get_dataloader("test", batch_size=self.hparams.per_gpu_eval_batch_size)
 
 
 def main(args):
@@ -142,6 +142,9 @@ def main(args):
     if not args.output_dir:
         args.output_dir = os.path.join("./results", f"{args.task}_{time.strftime('%Y%m%d_%H%M%S')}",)
         os.makedirs(args.output_dir)
+    if args.no_cuda:
+        logger.info("No CUDA")
+    args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
     model = Seq2SeqRankingTrainer(args)
     trainer = generic_train(model, args)
 

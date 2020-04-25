@@ -604,7 +604,7 @@ def main(args):
         # Disable all non-master loggers below CRITICAL.
         logging.disable(logging.CRITICAL)
         disable_logging = True
-    logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.num_cores)
+    logger.warning("Process rank: %s, device: %s, num_cores: %s", xm.get_ordinal(), args.device, args.n_tpu_cores)
     logger.info("Process is using %s", xm.xla_real_devices([str(args.device)])[0])
     # Set seed to have same initialization
     set_seed(args) 
@@ -721,7 +721,7 @@ def _mp_fn(rank, args):
 
 def main_cli():
     args = get_args()
-    xmp.spawn(_mp_fn, args=(args,), nprocs=args.num_cores)
+    xmp.spawn(_mp_fn, args=(args,), nprocs=args.n_tpu_cores)
 
 
 if __name__ == "__main__":

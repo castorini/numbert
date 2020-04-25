@@ -87,7 +87,7 @@ class TrainingArguments(TrainingArguments):
     msmarco_output: bool = field(default=False, metadata={"help": "Return MSMARCO output"})
     trec_output: bool = field(default=False, metadata={"help": "Return TREC output"})
     print_loss_steps: int = field(default=50, metadata={"help": "Print loss every X updates steps."})
-    num_cores: int = field(default=8, metadata={"help": "Number of TPU cores to use (1 or 8)."})
+    n_tpu_cores: int = field(default=0, metadata={"help": "Number of TPU cores to use (0/1/8)."})
     metrics_debug: bool = field(default=False, metadata={"help":"Whether to print debug metrics."})
     only_log_master: bool = field(default=False, metadata={"help": "Only log master"})
     num_workers: int = field(default=-1, metadata={"help": "Number of workers for sampling from TFRECORD"})
