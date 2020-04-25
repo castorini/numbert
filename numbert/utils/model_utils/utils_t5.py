@@ -36,6 +36,7 @@ class Seq2SeqRankingDataset(Dataset):
         self.max_target_length = max_target_length
         self.label_list = processor.get_labels()
         self.is_duoBERT = is_duoBERT
+        self.tokenizer = tokenizer
 
         if is_duoBERT:
             self.pattern = "Query: {query} sentence1: {sentence1} sentence2: {sentence2} </s>"
