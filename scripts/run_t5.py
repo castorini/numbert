@@ -1,12 +1,17 @@
+import warnings
+warnings.simplefilter('ignore', UserWarning)
+
 import argparse
 import glob
 import logging
 import os
 import time
+import fcntl
 
 import torch
 from torch.utils.data import DataLoader
 from transformers import HfArgumentParser
+import torch_xla.core.xla_model as xm
 
 from numbert.utils.transformer_base import BaseTransformer, add_generic_args, generic_train, get_linear_schedule_with_warmup
 from numbert.utils.args import ModelArguments, DataProcessingArguments, TrainingArguments
@@ -101,7 +106,11 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         return self.test_end(outputs)
 
     def get_dataloader(self, type_path: str, batch_size: int) -> DataLoader:
+        if not xm.is_master_ordinal():
+            xm.rendezvous("load_and_cache_examples")
         dataset = Dataset(self.tokenizer, type_path=type_path, **self.dataset_kwargs)
+        if xm.is_master_ordinal():
+            xm.rendezvous("load_and_cache_examples")
         data_set_args = {'batch_size': batch_size,
                          'max_seq_len': self.dataset_kwargs["max_source_length"],
                          'train': type_path == "train",
@@ -110,7 +119,8 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          'threaded_dl':self.hparams.num_workers > 0,
                          'task': self.hparams.task_name,
                          'in_batch_negative':self.hparams.in_batch_negative,
-                         'max_tseq_len': self.dataset_kwargs["max_target_length"]
+                         'max_tseq_len': self.dataset_kwargs["max_target_length"],
+                         'rank': xm.get_ordinal()
                          }
         if type_path == "train":
             self.train_dataset_length = len(dataset.guid_list)
