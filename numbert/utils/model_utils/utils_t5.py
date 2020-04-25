@@ -29,7 +29,7 @@ class Seq2SeqRankingDataset(Dataset):
     ):
         super().__init__()
         processor = processors[task_name]()
-        dataset = os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))
+        self.writer_file = os.path.join(data_dir, 'dataset_{}.tf'.format(type_path))
         cached_guid_map_file = type_path + "_guid_map.p"
         self.task_name = task_name
         self.max_source_length = max_source_length
@@ -65,14 +65,13 @@ class Seq2SeqRankingDataset(Dataset):
                 self.examples = processor.get_dev_examples(data_dir, is_duoBERT = is_duoBERT) if type_path == "dev" else processor.get_train_examples(data_dir, is_duoBERT = is_duoBERT)
             if self.task_name == "treccar":
                 (self.examples, self.original_queries) = self.examples
-            self.writer = tf.io.TFRecordWriter(dataset)
+            self.writer = tf.io.TFRecordWriter(self.writer_file)
             self.encode_features()
             with open(cached_guid_map_file, "wb") as fp:
                 pickle.dump(self.guid_list, fp)
             if self.task_name == "treccar":
                 with open(cached_oq_map_file, "wb") as fp:
                     pickle.dump(self.original_queries, fp)
-        return dataset
 
     def __len__(self):
         return len(self.guid_list)
