@@ -13,11 +13,10 @@ from torch.utils.data import DataLoader
 from transformers import HfArgumentParser
 import torch_xla.core.xla_model as xm
 
-from numbert.utils.transformer_base import BaseTransformer, add_generic_args, generic_train, get_linear_schedule_with_warmup
+from numbert.utils.transformer_base import BaseTransformer, generic_train, get_linear_schedule_with_warmup
 from numbert.utils.args import ModelArguments, DataProcessingArguments, TrainingArguments
 from numbert.utils.data_utils import tf_dl 
-from numbert.utils.model_utils.utils_t5 import Seq2SeqRankingDataset as Dataset
-
+from numbert.utils.model_utils import Seq2SeqRankingDataset, greedy_decode
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +33,18 @@ class Seq2SeqRankingTrainer(BaseTransformer):
             max_target_length = args.max_target_length
         )
         self.train_dataset_length = -1
-    def forward(self, input_ids, attention_mask=None, decoder_input_ids=None, lm_labels=None):
+        self.device = xm.xla_device()
+    def forward(self, input_ids, attention_mask=None, lm_labels=None):
         return self.model(
-            input_ids, attention_mask=attention_mask, decoder_input_ids=decoder_input_ids, lm_labels=lm_labels,
+            input_ids, attention_mask=attention_mask, lm_labels=lm_labels,
         )
 
-    def _step(self, batch):
+    def _step(self, batch): #TODO check if this works
         pad_token_id = self.tokenizer.pad_token_id
         source_ids, source_mask, y = batch["input_ids"], batch["attention_mask"], batch["target_ids"]
-        y_ids = y[:, :-1].contiguous()
-        lm_labels = y[:, 1:].clone()
-        lm_labels[y[:, 1:] == pad_token_id] = -100
-        outputs = self(source_ids, attention_mask=source_mask, decoder_input_ids=y_ids, lm_labels=lm_labels,)
+        lm_labels = y.clone() 
+        lm_labels[y == pad_token_id] = -100
+        outputs = self(source_ids, attention_mask=source_mask, lm_labels=lm_labels)
 
         loss = outputs[0]
 
@@ -68,24 +67,13 @@ class Seq2SeqRankingTrainer(BaseTransformer):
 
     def test_step(self, batch, batch_idx):
         pad_token_id = self.tokenizer.pad_token_id
-        source_ids, source_mask, y = Dataset.trim_seq2seq_batch(batch, pad_token_id)
+        source_ids, source_mask, y = Seq2SeqRankingDataset.trim_seq2seq_batch(batch, pad_token_id)
         # NOTE: the following kwargs get more speed and lower quality summaries than those in evaluate_cnn.py
-        generated_ids = self.model.generate(
-            input_ids=source_ids,
-            attention_mask=source_mask,
-            num_beams=1,
-            max_length=2,
-            repetition_penalty=0,
-            length_penalty=0,
-            early_stopping=True, #TODO check
-            use_cache=True,
-        )
-        preds = [
-            self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            for g in generated_ids
-        ]
-        target = [self.tokenizer.decode(t, skip_special_tokens=True, clean_up_tokenization_spaces=True) for t in y]
-        loss = self._step(batch)
+        _, batch_scores = greedy_decode(self.model,
+            source_ids.to(self.device),
+            length=self.dataset_kwargs["max_target_length"],
+            attention_mask=source_mask.to(self.device),
+            return_last_logits=True)
 
         return {"val_loss": loss, "preds": preds, "target": target}
 
@@ -108,7 +96,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
     def get_dataloader(self, type_path: str, batch_size: int) -> DataLoader:
         if not xm.is_master_ordinal():
             xm.rendezvous("load_and_cache_examples")
-        dataset = Dataset(self.tokenizer, type_path=type_path, **self.dataset_kwargs)
+        dataset = Seq2SeqRankingDataset(self.tokenizer, type_path=type_path, **self.dataset_kwargs)
         if xm.is_master_ordinal():
             xm.rendezvous("load_and_cache_examples")
         data_set_args = {'batch_size': batch_size,

@@ -13,6 +13,8 @@ from numbert.utils.utils_numbert import (
     create_int64_feature
 )  
 
+__all__ = ['Seq2SeqRankingDataset']
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +116,8 @@ class Seq2SeqRankingDataset(Dataset):
                     self.examples[ex_index:ex_index + batch_size]))
 
             input_ids = batch_source_tokens["input_ids"][ex_index%batch_size]
+            if input_ids[-1] != self.tokenizer.pad_token_id: #Make sure last source token is eos
+                input_ids[-1] = self.tokenizer.eos_token_id
             attention_mask = batch_source_tokens["attention_mask"][ex_index%batch_size]
             target_ids = batch_target_ids[ex_index%batch_size]
             label = self.label_map[example.label]
