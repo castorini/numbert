@@ -6,7 +6,6 @@ import glob
 import logging
 import os
 import time
-import fcntl
 
 import torch
 from torch.utils.data import DataLoader
@@ -16,7 +15,7 @@ import torch_xla.core.xla_model as xm
 from numbert.utils.transformer_base import BaseTransformer, generic_train, get_linear_schedule_with_warmup
 from numbert.utils.args import ModelArguments, DataProcessingArguments, TrainingArguments
 from numbert.utils.data_utils import tf_dl 
-from numbert.utils.model_utils import Seq2SeqRankingDataset, greedy_decode
+from numbert.utils.model_utils import Seq2SeqRankingDataset, greedy_decode, eval_epoch_end
 
 logger = logging.getLogger(__name__)
 
@@ -33,65 +32,58 @@ class Seq2SeqRankingTrainer(BaseTransformer):
             max_target_length = args.max_target_length
         )
         self.train_dataset_length = -1
-        self.device = xm.xla_device()
+
     def forward(self, input_ids, attention_mask=None, lm_labels=None):
         return self.model(
             input_ids, attention_mask=attention_mask, lm_labels=lm_labels,
         )
 
     def _step(self, batch): #TODO check if this works
-        pad_token_id = self.tokenizer.pad_token_id
         source_ids, source_mask, y = batch["input_ids"], batch["attention_mask"], batch["target_ids"]
         lm_labels = y.clone() 
-        lm_labels[y == pad_token_id] = -100
+        lm_labels[y == self.tokenizer.pad_token_id] = -100
         outputs = self(source_ids, attention_mask=source_mask, lm_labels=lm_labels)
-
         loss = outputs[0]
-
         return loss
 
     def training_step(self, batch, batch_idx):
         loss = self._step(batch)
-
         tensorboard_logs = {"train_loss": loss}
         return {"loss": loss, "log": tensorboard_logs}
 
-    def validation_step(self, batch, batch_idx):
-        loss = self._step(batch)
-        return {"val_loss": loss}
-
-    def validation_end(self, outputs):
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-        tensorboard_logs = {"val_loss": avg_loss}
-        return {"avg_val_loss": avg_loss, "log": tensorboard_logs}
-
-    def test_step(self, batch, batch_idx):
-        pad_token_id = self.tokenizer.pad_token_id
-        source_ids, source_mask, y = Seq2SeqRankingDataset.trim_seq2seq_batch(batch, pad_token_id)
+    def _eval_step(self, batch, batch_idx):
+        source_ids, source_mask, y = Seq2SeqRankingDataset.trim_seq2seq_batch(batch, self.tokenizer.pad_token_id)
         # NOTE: the following kwargs get more speed and lower quality summaries than those in evaluate_cnn.py
         _, batch_scores = greedy_decode(self.model,
-            source_ids.to(self.device),
+            source_ids,
             length=self.dataset_kwargs["max_target_length"],
-            attention_mask=source_mask.to(self.device),
+            attention_mask=source_mask,
             return_last_logits=True)
+        batch_scores = batch_scores[:, [6136, 1176]]
+        batch_scores = torch.nn.functional.log_softmax(batch_scores, dim=1)
+        result_step = {"lguids": batch_guids.detach().cpu().numpy(),
+                       "out_label_ids": batch["labels"].detach().cpu().numpy(),
+                       "preds": batch_scores[:,1].detach().cpu().numpy()}
+        if args.task_name == "treccar":
+            result_step["llen_gt_titles"] = batch["len_gt_titles"].detach().cpu().numpy()
+        return result_step
 
-        return {"val_loss": loss, "preds": preds, "target": target}
 
-    def test_end(self, outputs):
-        return self.validation_end(outputs)
+    def validation_step(self, batch, batch_idx):
+        self._eval_step(batch, batch_idx)
+        return {}
+
+    def validation_epoch_end(self, outputs):
+        eval_epoch_end(outputs, self.guid_list, self.hparams, self.original_queries, "dev")
+        return {}
+
+    def test_step(self, batch, batch_idx):
+        self._eval_step(batch, batch_idx)
+        return {}
 
     def test_epoch_end(self, outputs):
-        output_test_predictions_file = os.path.join(self.hparams.output_dir, "test_predictions.txt")
-        output_test_targets_file = os.path.join(self.hparams.output_dir, "test_targets.txt")
-        # write predictions and targets for later rouge evaluation.
-        with open(output_test_predictions_file, "w+") as p_writer, open(output_test_targets_file, "w+") as t_writer:
-            for output_batch in outputs:
-                p_writer.writelines(s + "\n" for s in output_batch["preds"])
-                t_writer.writelines(s + "\n" for s in output_batch["target"])
-            p_writer.close()
-            t_writer.close()
-
-        return self.test_end(outputs)
+        eval_epoch_end(outputs, self.guid_list, self.hparams, self.original_queries, "test")
+        return {}
 
     def get_dataloader(self, type_path: str, batch_size: int) -> DataLoader:
         if not xm.is_master_ordinal():
@@ -112,6 +104,8 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          }
         if type_path == "train":
             self.train_dataset_length = len(dataset.guid_list)
+        self.guid_list = dataset.guid_list
+        self.original_queries = dataset.original_queries if args.hparams.task_name = "treccar" else None
         dataloader = tf_dl.TFRecordDataLoader(dataset.writer_file, **data_set_args)
         return dataloader
 
