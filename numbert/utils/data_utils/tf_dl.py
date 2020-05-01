@@ -22,7 +22,7 @@ import torch
 
 class TFRecordDataLoader(object):
     def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=42, threaded_dl=False, task="msmarco", 
-                 in_batch_negative=False, rank = -1, num_shards=8, max_tseq_len=None, length=None):
+                 in_batch_negative=False, rank = -1, num_shards=8, max_tseq_len=None, length=0):
         tf.random.set_seed(seed)
         if isinstance(records, str):
             records  = [records]
