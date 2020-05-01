@@ -22,7 +22,7 @@ import torch
 
 class TFRecordDataLoader(object):
     def __init__(self, records, batch_size, max_seq_len, train, num_workers=2, seed=42, threaded_dl=False, task="msmarco", 
-                 in_batch_negative=False, rank = -1, num_shards=8, max_tseq_len=None):
+                 in_batch_negative=False, rank = -1, num_shards=8, max_tseq_len=None, length=None):
         tf.random.set_seed(seed)
         if isinstance(records, str):
             records  = [records]
@@ -41,7 +41,7 @@ class TFRecordDataLoader(object):
             record_format["len_gt_titles"] = tf.io.FixedLenFeature([1], tf.int64)
 
         self.record_converter = Record2Example(record_format)
-        
+        self.length = length
         #Instantiate dataset according to original BERT implementation
         if train and (not in_batch_negative):
             self.dataset = tf.data.Dataset.from_tensor_slices(tf.constant(records))
@@ -77,6 +77,10 @@ class TFRecordDataLoader(object):
             data_iter = iter(self.dataloader)
             for item in data_iter:
                 yield convert_tf_example_to_torch_tensors(item)
+
+    def __len__(self):
+        return self.length
+
 
 class Record2Example(object):
     def __init__(self, feature_map):

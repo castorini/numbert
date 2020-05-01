@@ -66,9 +66,9 @@ class Seq2SeqRankingDataset(Dataset):
                 logger.info("Loading Collection")
                 processor.load_collection(data_dir)
             if type_path == "test":
-                self.examples = processor.get_test_examples(data_dir, is_duo = is_duo)
+                self.examples = processor.get_test_examples(data_dir, is_duoBERT = is_duo)
             else:
-                self.examples = processor.get_dev_examples(data_dir, is_duo = is_duo) if type_path == "dev" else processor.get_train_examples(data_dir, is_duo = is_duo)
+                self.examples = processor.get_dev_examples(data_dir, is_duoBERT = is_duo) if type_path == "dev" else processor.get_train_examples(data_dir, is_duoBERT = is_duo)
             if self.task_name == "treccar":
                 (self.examples, self.original_queries) = self.examples
             self.writer = tf.io.TFRecordWriter(self.writer_file)

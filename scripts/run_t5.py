@@ -15,7 +15,8 @@ import torch_xla.core.xla_model as xm
 from numbert.utils.transformer_base import BaseTransformer, generic_train, get_linear_schedule_with_warmup
 from numbert.utils.args import ModelArguments, DataProcessingArguments, TrainingArguments
 from numbert.utils.data_utils import tf_dl 
-from numbert.utils.model_utils import Seq2SeqRankingDataset, greedy_decode, eval_epoch_end
+from numbert.utils.model_utils.utils_t5 import Seq2SeqRankingDataset, eval_epoch_end
+from numbert.utils.model_utils.decode import greedy_decode
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         result_step = {"lguids": batch_guids.detach().cpu().numpy(),
                        "out_label_ids": batch["labels"].detach().cpu().numpy(),
                        "preds": batch_scores[:,1].detach().cpu().numpy()}
-        if args.task_name == "treccar":
+        if self.hparams.task_name == "treccar":
             result_step["llen_gt_titles"] = batch["len_gt_titles"].detach().cpu().numpy()
         return result_step
 
@@ -91,6 +92,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
         dataset = Seq2SeqRankingDataset(self.tokenizer, type_path=type_path, **self.dataset_kwargs)
         if xm.is_master_ordinal():
             xm.rendezvous("load_and_cache_examples")
+        self.guid_list = dataset.guid_list
         data_set_args = {'batch_size': batch_size,
                          'max_seq_len': self.dataset_kwargs["max_source_length"],
                          'train': type_path == "train",
@@ -101,11 +103,11 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          'in_batch_negative':self.hparams.in_batch_negative,
                          'max_tseq_len': self.dataset_kwargs["max_target_length"],
                          'rank': xm.get_ordinal()
+                         'length': len(self.guid_list)
                          }
         if type_path == "train":
             self.train_dataset_length = len(dataset.guid_list)
-        self.guid_list = dataset.guid_list
-        self.original_queries = dataset.original_queries if args.hparams.task_name = "treccar" else None
+        self.original_queries = dataset.original_queries if self.hparams.task_name == "treccar" else None
         dataloader = tf_dl.TFRecordDataLoader(dataset.writer_file, **data_set_args)
         return dataloader
 
