@@ -62,7 +62,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
             return_last_logits=True)
         batch_scores = batch_scores[:, [6136, 1176]]
         batch_scores = torch.nn.functional.log_softmax(batch_scores, dim=1)
-        result_step = {"lguids": batch_guids.detach().cpu().numpy(),
+        result_step = {"lguids": batch["guids"].detach().cpu().numpy(),
                        "out_label_ids": batch["labels"].detach().cpu().numpy(),
                        "preds": batch_scores[:,1].detach().cpu().numpy()}
         if self.hparams.task_name == "treccar":
