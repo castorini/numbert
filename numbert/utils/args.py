@@ -59,7 +59,7 @@ class DataProcessingArguments:
         },
     )
     max_target_length: int = field(
-        default=2,
+        default=1,
         metadata={
             "help": "The maximum total target input sequence length after tokenization. Sequences longer "
             "than this will be truncated, sequences shorter will be padded."
