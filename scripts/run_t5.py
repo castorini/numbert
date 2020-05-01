@@ -71,16 +71,16 @@ class Seq2SeqRankingTrainer(BaseTransformer):
 
 
     def validation_step(self, batch, batch_idx):
-        self._eval_step(batch, batch_idx)
-        return {}
+        result_step = self._eval_step(batch, batch_idx)
+        return result_step
 
     def validation_epoch_end(self, outputs):
         eval_epoch_end(outputs, self.guid_list, self.hparams, self.original_queries, "dev")
         return {}
 
     def test_step(self, batch, batch_idx):
-        self._eval_step(batch, batch_idx)
-        return {}
+        result_step = self._eval_step(batch, batch_idx)
+        return result_step
 
     def test_epoch_end(self, outputs):
         eval_epoch_end(outputs, self.guid_list, self.hparams, self.original_queries, "test")
