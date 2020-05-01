@@ -102,7 +102,7 @@ class Seq2SeqRankingTrainer(BaseTransformer):
                          'task': self.hparams.task_name,
                          'in_batch_negative':self.hparams.in_batch_negative,
                          'max_tseq_len': self.dataset_kwargs["max_target_length"],
-                         'rank': xm.get_ordinal()
+                         'rank': xm.get_ordinal(),
                          'length': len(self.guid_list)
                          }
         if type_path == "train":
