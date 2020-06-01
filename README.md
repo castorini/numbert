@@ -1,6 +1,9 @@
 # numBERT
 
-## *Note: numBERT is defunct. You can check out [PyGaggle](https://github.com/castorini/pygaggle) for neural ranking inference!*
+**Important Note:** as of June 2020, numBERT is defunct and has been superseded by [PyGaggle](https://github.com/castorini/pygaggle), our library of deep neural architectures for text ranking and question answering.
+This repo is preserved in a read-only state for archival purposes only.
+
+---
 
 Passage Ranking Library using various pretrained LMs
 
